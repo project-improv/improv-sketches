@@ -1,5 +1,4 @@
 module simGLM
-    using CatViews
     using ForwardDiff
     using StaticArrays
     using LinearAlgebra: dot
@@ -13,72 +12,47 @@ module simGLM
         n::Int
     end
 
-    function copy!(from::Array, to::Union{SubArray, Base.ReshapedArray})
-        if length(size(from)) > 1
-            for i in size(from)[1]
-                for j in size(from)[2]
-                    to[i, j] = from[i, j]
-                end
-            end
-        else
-            for i in size(from)[1]
-                to[i] = from[i]
-            end
-        end
-    end
-
     function MakePillowGLM(w::Array, h::Array, b::Array, data::Array, params::Dict)
         M = size(data)[2]
         N = params["numNeurons"]
         dh = params["hist_dim"]
         dt = params["dt"]
-
         θ = [w[:]; h[:]; b[:]]
-
-        # w = reshape(θ[1: N*N], N, N)
-        # h = reshape(θ[N*N+1: N*(N+dh)], N, dh)
-        # b = reshape(θ[N*(N+dh)+1: end], N)
-
         PillowGLM(M, N, dh, dt, θ, 0)
     end
 
-    function ll(θ, model, data, params)
-        # θ is w, h, b, data is y
-        M = size(data)[2]  # params["numSamples"]
-        N = params["numNeurons"]
-        dt = params["dt"]
+    function ll(o::PillowGLM, data)
+        ll(o.θ, o, data)
+    end
 
-        expo = ones(eltype(θ), N, M)
+    function ll(θ, o::PillowGLM, data)
+        expo = ones(eltype(θ), o.N, o.M)
 
-        for j in 1:M  # Time
-            expo[:,j] = runModelStep(θ, model, data[:, 1:j], params)
+        for j in 1:o.M  # Time
+            expo[:,j] = runModelStep(θ, o, data[:, 1:j])
         end
 
-        r̂ = dt.*exp.(expo)
+        r̂ = o.dt.*exp.(expo)
 
         return (sum(r̂) + sum(data .* log.(r̂)))  # Log-likelihood
     end
 
-    function runModelStep(θ, model, data, params)
-        M = params["numSamples"]
-        N = params["numNeurons"]
-        dh = params["hist_dim"]
-
+    function runModelStep(θ, o::PillowGLM, data)
         # Since theta is lumped in, separate.
-        w = reshape(θ[1: N*N], N, N)
-        h = reshape(θ[N*N+1: N*(N+dh)], N, dh)
-        b = reshape(θ[N*(N+dh)+1: end], N)
+        w = reshape(θ[1: o.N*o.N], o.N, o.N)
+        h = reshape(θ[o.N*o.N+1: o.N*(o.N+o.dh)], o.N, o.dh)
+        b = reshape(θ[o.N*(o.N+o.dh)+1: end], o.N)
 
         t = size(data)[2] # data length in time
 
-        output = zeros(eltype(θ), N)
-        for i in 1:N  # Neuron
+        output = zeros(eltype(θ), o.N)
+        for i in 1:o.N  # Neuron
             if t < 1
                 hist = 0
-            elseif t < dh
+            elseif t < o.dh
                 hist = sum(reverse(h,dims=2)[i, 1:t] .* data[i, 1: t])
             else
-                hist = sum(reverse(h,dims=2)[i, :] .* data[i, t-dh+1: t])
+                hist = sum(reverse(h,dims=2)[i, :] .* data[i, t-o.dh+1: t])
             end
 
             if t < 2
@@ -88,14 +62,22 @@ module simGLM
             end
             output[i] = b[i] + hist + weights
         end
+
         return output
     end
 
-    function ll_grad(x, model, data, params)
-        function wrapper(x)
-            return ll(x, model, data, params)
+    function ll_grad(o::PillowGLM, data)
+        function wrapper(θ)
+            return ll(θ, o, data)
         end
-        return ForwardDiff.gradient(n -> wrapper(n), x)
+        o.n += 1
+        return ForwardDiff.gradient(n -> wrapper(n), o.θ)
+    end
+
+    function fit!(o::PillowGLM, data, iter; rate=i -> 1/i)
+        for i in 1:iter
+            o.θ -= simGLM.ll_grad(o, data) * rate(o.n)
+        end
     end
 end
 
@@ -110,15 +92,10 @@ p = Dict("numSamples" => M, "numNeurons" => N, "hist_dim" => dh, "dt" => 0.1)
 weights = rand(N, N)
 hist = rand(N, dh)
 base = rand(N)
+data = randn(N, M) ./ 10
+
 model = simGLM.MakePillowGLM(weights, hist, base, data, p)
 
-# θ = [weights[:]; hist[:]; base[:]]
-data = randn(N, M) ./ 10
-println(simGLM.ll(model.θ, model, data, p))
-
-for i in 1:100
-    global model
-    model.θ -= (1/i) * simGLM.ll_grad(model.θ, model, data, p)
-end
-
-println(simGLM.ll(model.θ, model, data, p))
+println(simGLM.ll(model, data))
+simGLM.fit!(model, data, 10)
+println(simGLM.ll(model, data))
