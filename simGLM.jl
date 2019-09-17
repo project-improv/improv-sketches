@@ -1,3 +1,5 @@
+__precompile__()
+
 module simGLM
     using ForwardDiff
     using StaticArrays
@@ -12,7 +14,7 @@ module simGLM
         n::Int
     end
 
-    function MakePillowGLM(w::Array, h::Array, b::Array, data::Array, params::Dict)
+    function PillowGLM(w::Array, h::Array, b::Array, data::Array, params::Dict)
         M = size(data)[2]
         N = params["numNeurons"]
         dh = params["hist_dim"]
@@ -35,6 +37,11 @@ module simGLM
         r̂ = o.dt.*exp.(expo)
 
         return (sum(r̂) + sum(data .* log.(r̂)))  # Log-likelihood
+    end
+
+    function ll_grad(o::PillowGLM, data)
+        o.n += 1
+        return ForwardDiff.gradient(θ -> ll(θ, o, data), o.θ)
     end
 
     function runModelStep(θ, o::PillowGLM, data)
@@ -66,18 +73,8 @@ module simGLM
         return output
     end
 
-    function ll_grad(o::PillowGLM, data)
-        function wrapper(θ)
-            return ll(θ, o, data)
-        end
-        o.n += 1
-        return ForwardDiff.gradient(n -> wrapper(n), o.θ)
-    end
-
     function fit!(o::PillowGLM, data, iter; rate=i -> 1/i)
-        for i in 1:iter
-            o.θ -= simGLM.ll_grad(o, data) * rate(o.n)
-        end
+        o.θ -= simGLM.ll_grad(o, data) * rate(o.n)
     end
 end
 
@@ -94,8 +91,10 @@ hist = rand(N, dh)
 base = rand(N)
 data = randn(N, M) ./ 10
 
-model = simGLM.MakePillowGLM(weights, hist, base, data, p)
+model = simGLM.PillowGLM(weights, hist, base, data, p)
 
 println(simGLM.ll(model, data))
-simGLM.fit!(model, data, 10)
+for i in 1:100
+    simGLM.fit!(model, data)
+end
 println(simGLM.ll(model, data))
