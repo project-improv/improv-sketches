@@ -73,7 +73,7 @@ module simGLM
         return output
     end
 
-    function fit!(o::PillowGLM, data, iter; rate=i -> 1/i)
+    function fit!(o::PillowGLM, data; rate=i -> 1/i)
         o.θ -= simGLM.ll_grad(o, data) * rate(o.n)
     end
 end
