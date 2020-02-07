@@ -68,8 +68,7 @@ class GLMJax:
             optimizer = {'name': 'adagrad', 'step_size': 1e-5}
         print(f'Optimizer: {optimizer}')
         opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
-        del optimizer['name']
-        optimizer = {k: float(v) for k, v in optimizer.items()}
+        optimizer = {k: float(v) for k, v in optimizer.items() if k != 'name'}
         self.opt_init, self.opt_update, self.get_params = opt_func(**optimizer)
         self._θ: OptimizerState = self.opt_init(self._θ)
 
