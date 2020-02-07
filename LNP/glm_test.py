@@ -63,10 +63,7 @@ def run_jax(opt, n):
 if __name__ == '__main__':
 
     S = pickle.loads(Path('cnmf_s.pk').read_bytes())  # See caiman.estimates.S
-    T = 50  # Length of test
-
-    # Run python
-    llt_py = run_py(T)
+    T = 5  # Length of test
 
     N = 2
     M = 100
@@ -74,12 +71,14 @@ if __name__ == '__main__':
     ds = 8
     stim = np.zeros((ds, T))
 
+    # Run python
+    llt_py = run_py(T)
+
     p = {'dh': dh, 'ds': ds, 'dt': 0.1, 'n': 0, 'N_lim': N, 'M_lim': M}
 
     # Compare optimizers
     opts = {
-        'SGD': optimizers.sgd(online_sch),
-        'Adam': optimizers.adam(online_sch)
+        'SGD': None, #optimizers.sgd(online_sch),
     }
 
     llt_jax = {name: run_jax(opt, T) for name, opt in opts.items()}

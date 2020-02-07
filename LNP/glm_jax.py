@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 
 from functools import partial
+from importlib import import_module
 from typing import Dict, Tuple
 
 import jax.numpy as np
 import numpy as onp
-
 from jax import devices, jit, random, value_and_grad
 from jax.config import config
-from jax.experimental import optimizers
+from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 
 
 class GLMJax:
-    def __init__(self, p: Dict, θ=None,
-                 optimizer=optimizers.sgd(1e-5), use_gpu=False):
+    def __init__(self, p: Dict, θ=None, optimizer=None, use_gpu=False):
         """
         A JAX implementation of simGLM.
 
@@ -28,7 +27,7 @@ class GLMJax:
         :type p: dict
         :param θ: Dictionary of ndarray weights. Must conform to parameters in p.
         :type θ: dict
-        :param use_gpu: Use GPU. Defaults to single-precision.
+        :param use_gpu: Use GPU
         :type use_gpu: bool
         """
 
@@ -65,10 +64,14 @@ class GLMJax:
             self._θ = {key: np.asarray(item) for key, item in θ.items()}  # Convert to DeviceArray
 
         # Setup optimizer
-        self.optimizer = optimizer
-        self.opt_init, self.opt_update, self.get_params = self.optimizer
-        self.opt_update = jit(self.opt_update)
-        self._θ: optimizers.OptimizerState = self.opt_init(self._θ)
+        if optimizer is None:
+            optimizer = {'name': 'adagrad', 'step_size': 1e-5}
+        print(f'Optimizer: {optimizer}')
+        opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
+        del optimizer['name']
+        optimizer = {k: float(v) for k, v in optimizer.items()}
+        self.opt_init, self.opt_update, self.get_params = opt_func(**optimizer)
+        self._θ: OptimizerState = self.opt_init(self._θ)
 
         self._ll_grad = value_and_grad(self._ll)
 
@@ -83,20 +86,20 @@ class GLMJax:
     def fit(self, y, s) -> float:
         args = self._check_arrays(y, s)
         ll, Δ = self._ll_grad(self.θ, self.params, *args)
-        self._θ: optimizers.OptimizerState = self.opt_update(self.iter, Δ, self._θ)
+        self._θ: OptimizerState = self.opt_update(self.iter, Δ, self._θ)
 
         self.iter += 1
         return float(ll)
 
-    def grad(self, y, s) -> DeviceArray:
+    def get_grad(self, y, s) -> DeviceArray:
         return self._ll_grad(self.θ, self.params, *self._check_arrays(y, s))[1]
 
     def _check_arrays(self, y, s) -> Tuple[onp.ndarray]:
         """
         Check validity of input arrays and pad to N_lim and M_lim.
         :return padded arrays
-        """
 
+        """
         assert y.shape[1] == s.shape[1]
         assert s.shape[0] == self.params['ds']
 
