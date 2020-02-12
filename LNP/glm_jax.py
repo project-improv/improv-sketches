@@ -27,6 +27,8 @@ class GLMJax:
         :type p: dict
         :param θ: Dictionary of ndarray weights. Must conform to parameters in p.
         :type θ: dict
+        :param optimizer: Dictionary of optimizer name and hyperparameters from jax.experimental.optimizers. Ex. {'name': 'SGD, **kwargs}
+        :type optimizer: dict
         :param use_gpu: Use GPU
         :type use_gpu: bool
         """
