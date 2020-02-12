@@ -10,9 +10,30 @@ import pickle
 
 from glm_jax import GLMJax
 
+"""
+Create a log-likelihood graph over time using different optimizers.
 
-# Convert y,s to offline.
+"""
+
+params = {'dh': 10, 'ds': 8, 'dt': 0.1, 'n': 0, 'N_lim': 200, 'M_lim': 3000}
+
+optimizers = [
+    {'name': 'sgd', 'step_size': 1e-5},
+    # {'name': 'sgd', 'step_size': 1e-4, 'offline': True},
+    # {'name': 'momentum', 'step_size': 1e-5, 'mass': 0.9},
+    # {'name': 'momentum', 'step_size': 1e-5, 'mass': 0.9, 'offline': True},
+    # {'name': 'nesterov', 'step_size': 1e-5, 'mass': 0.9},
+    # {'name': 'adam', 'step_size': 1e-4},
+    # {'name': 'adam', 'step_size': 1e-4, 'offline': True},
+    # {'name': 'adagrad', 'step_size': 1e-5, 'momentum': 0.9},
+    # {'name': 'rmsprop', 'step_size': 4e-5},
+    # {'name': 'rmsprop_momentum', 'step_size': 1e-5},
+    # {'name': 'rmsprop_momentum', 'step_size': 1e-5, 'offline': True},
+    # {'name': 'sm3', 'step_size': 1e-5},
+]
+
 def conv_ys(y, s):
+    """ Assuming that M = 100. """
     y_all = np.zeros((y[-1].shape[0], len(y)), dtype=np.float32)
 
     first_hundred = y[98]
@@ -36,32 +57,14 @@ def conv_ys(y, s):
     return y_all, s_all
 
 
-with open('../tbif_batch_for_analysis.pk', 'rb') as f:
+with open('tbif_batch_for_analysis.pk', 'rb') as f:
     y, s = pickle.load(f)
 
 y_all, s_all = conv_ys(y, s)
 
-params = {'dh': 10, 'ds': 8, 'dt': 0.1, 'n': 0, 'N_lim': 200, 'M_lim': 3000}
-
-optimizers = [
-    {'name': 'sgd', 'step_size': 1e-5},
-    {'name': 'sgd', 'step_size': 1e-5, 'offline': True},
-    # {'name': 'momentum', 'step_size': 1e-5, 'mass': 0.9},
-    # {'name': 'momentum', 'step_size': 1e-5, 'mass': 0.9, 'offline': True},
-    # {'name': 'nesterov', 'step_size': 1e-5, 'mass': 0.9},
-    # {'name': 'adam', 'step_size': 1e-5},
-    # {'name': 'adam', 'step_size': 1e-5, 'offline': True},
-    # # {'name': 'adagrad', 'step_size': 1e-5, 'momentum': 0.9},
-    # {'name': 'rmsprop', 'step_size': 1e-5},
-    # {'name': 'rmsprop_momentum', 'step_size': 1e-5},
-    # {'name': 'rmsprop_momentum', 'step_size': 1e-5, 'offline': True},
-    # {'name': 'sm3', 'step_size': 1e-5},
-]
-
 rpf = 1
 ts = dict()
 lls = np.zeros((rpf * len(y), len(optimizers)))
-
 
 for i, opt in enumerate(optimizers):
     offline = opt.get('offline', False)
@@ -88,6 +91,7 @@ for i, opt in enumerate(optimizers):
 
     ts[opt['name']] = time.time() - t0
 
+# Plot
 fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
 colors = ['r', 'g', 'b', 'k']
 for i in range(lls.shape[1]):
@@ -99,7 +103,7 @@ for i in range(lls.shape[1]):
 
 ax.set_xlabel('Iterations')
 ax.set_ylabel('-log-likelihood')
-ax.set_title('Optimizers Comparison - On vs offline')
+ax.set_title('Optimizers Comparison')
 plt.legend()
-# plt.savefig('optimizer_comp.png')
+plt.savefig('optimizer_comp.png')
 plt.show()
