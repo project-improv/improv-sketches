@@ -7,9 +7,11 @@ import numpy as np
 
 class GLMPy:
     # TODO: Add additional error handling
-    # def __init__(self, theta, p, ):
-    #     self.p = p
-    #     self.theta = theta
+    # Removed varying LR.
+    def __init__(self, theta, p, ):
+        self.p = p
+        self.theta = theta
+        self.frame = 0
 
     def setup(self, param_file=None):
         '''
@@ -75,7 +77,8 @@ class GLMPy:
         y_step = np.where(np.isnan(y_step), 0, y_step)  # Why are there nans here anyway?? #TODO
         ll = self.ll(y_step, stim_step)
         # t0 = time.time()
-        self.theta -= 1e-5 * self.ll_grad(y_step, stim_step) * (self.frame / 100)
+        self.theta -= 1e-5 * self.ll_grad(y_step, stim_step)#  * (self.frame / 100)
+        self.frame += 1
         # self.LL.append(self.ll(y_step, stim_step))
 
         return ll
@@ -105,14 +108,12 @@ class GLMPy:
             rhat = rhat * dt
         except FloatingPointError:
             print('FPE in rhat*dt; likely underflow')
-
         # model parameters
         # h = self.theta[N*N:N*(N+dh)].reshape((N,dh))
         # b = self.theta[N*(N+dh):].reshape(N)
 
         # compute negative log-likelihood
         # include l1 or l2 penalty on weights
-
         ll_val = ((np.sum(rhat) - np.sum(y * np.log(rhat + eps)))) / y.shape[1] / N  # + l1
 
         return ll_val

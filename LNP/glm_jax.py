@@ -11,6 +11,7 @@ from jax.config import config
 from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 
+config.update("jax_enable_x64", True)
 
 class GLMJax:
     def __init__(self, p: Dict, θ=None, optimizer=None, use_gpu=False):
@@ -67,10 +68,10 @@ class GLMJax:
 
         # Setup optimizer
         if optimizer is None:
-            optimizer = {'name': 'adagrad', 'step_size': 1e-5}
+            optimizer = {'name': 'sgd', 'step_size': 1e-5}
         print(f'Optimizer: {optimizer}')
         opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
-        optimizer = {k: float(v) for k, v in optimizer.items() if k != 'name'}
+        optimizer = {k: v for k, v in optimizer.items() if k != 'name'}
         self.opt_init, self.opt_update, self.get_params = opt_func(**optimizer)
         self._θ: OptimizerState = self.opt_init(self._θ)
 
@@ -165,7 +166,6 @@ class GLMJax:
         cal_weight = np.concatenate((np.zeros((N, p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]), axis=1)
 
         total = θ["b"][:N] + (cal_stim + cal_weight + cal_hist)
-
         r̂ = p['dt'] * np.exp(total)
         correction = p['dt'] * (np.size(y) - curr_mn)  # Remove padding
 
@@ -200,43 +200,63 @@ class GLMJax:
         return f'simGLM Iteration: {self.iter}, Optimizer: {self.optimizer} \n Parameters: {self.params})'
 
 
+def online_sch(i_frame):
+    """ Learning rate schedule for JAX. Linear increase over frame number. """
+    print(i_frame)
+    return 1e-5 * i_frame / 100
+
+
 if __name__ == '__main__':  # Test
-    key = random.PRNGKey(42)
     from glm_py import GLMPy
 
-    N = 2
-    M = 100
+    N = 5
+    M = 20
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.1, 'n': 0, 'N_lim': N, 'M_lim': M}
-
-    w = random.normal(key, shape=(N, N)) * 0.001
-    h = random.normal(key, shape=(N, dh)) * 0.001
-    k = random.normal(key, shape=(N, ds)) * 0.001
-    b = random.normal(key, shape=(N, 1)) * 0.001
 
     # w = np.zeros((N, N))
     # h = np.zeros((N, dh))
     # k = np.zeros((N, ds))
     # b = np.zeros((N, 1))
 
-    theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
-    model = GLMJax(p, theta)
+    key = random.PRNGKey(10)
+    w = random.normal(key, shape=(N, N)) * 0.001
+    h = random.normal(key, shape=(N, dh)) * 0.001
+    k = random.normal(key, shape=(N, ds)) * 0.001
+    b = random.normal(key, shape=(N, 1)) * 0.001
 
-    sN = 8  #
-    data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
-    stim = onp.random.randn(ds, 2)
-    print(model.ll(data, stim))
-    # model.fit(data, stim)
+    theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
+    model = GLMJax(p, theta, optimizer={'name': 'sgd', 'step_size': 1e-5})# online_sch})
+
+    onp.random.seed(10)
+    data = onp.random.randn(N, M)  # onp.zeros((8, 50))
+    stim = onp.random.randn(ds, M)
 
     def gen_ref():
-        ow = onp.asarray(w)[:sN, :sN]
-        oh = onp.asarray(h)[:sN, ...]
-        ok = onp.asarray(k)[:sN, ...]
-        ob = onp.asarray(b)[:sN, ...]
-
-        p = {'numNeurons': sN, 'hist_dim': dh, 'numSamples': M, 'dt': 0.1, 'stim_dim': ds}
+        ow = onp.asarray(w)[:N, :N]
+        oh = onp.asarray(h)[:N, :]
+        ok = onp.asarray(k)[:N, :]
+        ob = onp.asarray(b)[:N, :]
+        p = {'numNeurons': N, 'hist_dim': dh, 'numSamples': M, 'dt': 0.1, 'stim_dim': ds}
         return GLMPy(onp.concatenate((ow, oh, ob, ok), axis=None).flatten(), p)
 
     old = gen_ref()
+    old.S = data
+    old.currStimID = stim
+
+    print('Original LL')
+    print(model.ll(data, stim))
+    print(old.ll(data, stim))
+
+    print('Original grad - w')
+    print(model.get_grad(data, stim)['w'])
+    print(old.ll_grad(data, stim)[:N*N].reshape(N, N))
+
+    for i in range(100):
+        old.fit()
+        model.fit(data, stim)
+
+    print('LL after 100 steps.')
+    print(model.ll(data, stim))
     print(old.ll(data, stim))
