@@ -1,4 +1,4 @@
-# improv-sketches
+# stimdistributions
 
 Various functions for the visualization of stimulus and response distributions, OASIS results, and various statistics.
 
