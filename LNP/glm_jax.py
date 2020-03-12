@@ -6,15 +6,19 @@ from typing import Dict, Tuple
 
 import jax.numpy as np
 import numpy as onp
-from jax import devices, jit, random, value_and_grad
+from jax import devices, jit, random, grad, value_and_grad
 from jax.config import config
 from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 
-config.update("jax_enable_x64", True)
+try:  # kernprof
+    profile
+except NameError:
+    def profile(x): return x
+
 
 class GLMJax:
-    def __init__(self, p: Dict, θ=None, optimizer=None, use_gpu=False):
+    def __init__(self, p: Dict, theta=None, optimizer=None, use_gpu=False, offline_data=None):
         """
         A JAX implementation of simGLM.
 
@@ -24,22 +28,23 @@ class GLMJax:
 
         There is a substantial cost to increasing N. It is a better idea to keep N reasonably high at initialization.
 
-        :param p: Dictionary of parameters.
+        :param p: Dictionary of parameters. λ is L1 sparsity.
         :type p: dict
-        :param θ: Dictionary of ndarray weights. Must conform to parameters in p.
-        :type θ: dict
+        :param theta: Dictionary of ndarray weights. Must conform to parameters in p.
+        :type theta: dict
         :param optimizer: Dictionary of optimizer name and hyperparameters from jax.experimental.optimizers. Ex. {'name': 'SGD, **kwargs}
         :type optimizer: dict
         :param use_gpu: Use GPU
         :type use_gpu: bool
+        :param offline_data: (y, s) full offline data (to prevent unnecessary CPU/GPU transfers)
         """
 
         self.use_gpu = use_gpu
-        platform = 'gpu' if use_gpu else 'cpu'  # If changing platform, python interpreter needs to restart.
+        platform = 'gpu' if use_gpu else 'cpu'  # Restart interpreter when switching platform.
         config.update('jax_platform_name', platform)
         print('Using', devices()[0])
 
-        if not self.use_gpu:
+        if not self.use_gpu:  # JAX defaults to single precision.
             config.update("jax_enable_x64", True)
 
         # p check
@@ -48,34 +53,33 @@ class GLMJax:
         self.params = p
 
         # θ check
-        if θ is None:
-            w = np.zeros((p['N_lim'], p['N_lim']))
-            k = np.zeros((p['N_lim'], p['ds']))
-            b = np.zeros((p['N_lim'], 1))
-            h = np.zeros((p['N_lim'], p['dh']))
-            self._θ = {'h': h, 'w': w, 'b': b, 'k': k}
-
+        if theta is None:
+            raise ValueError('θ not specified.')
         else:
-            assert θ['w'].shape == (p['N_lim'], p['N_lim'])
-            assert θ['h'].shape == (p['N_lim'], p['dh'])
-            assert θ['k'].shape == (p['N_lim'], p['ds'])
-            assert (θ['b'].shape == (p['N_lim'],)) or (θ['b'].shape == (p['N_lim'], 1))
+            assert theta['w'].shape == (p['N_lim'], p['N_lim'])
+            assert theta['h'].shape == (p['N_lim'], p['dh'])
+            assert theta['k'].shape == (p['N_lim'], p['ds'])
+            assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
 
-            if len(θ['b'].shape) == 1:  # Array needs to be 2D.
-                θ['b'] = np.reshape(θ['b'], (p['N_lim'], 1))
+            if len(theta['b'].shape) == 1:  # Array needs to be 2D.
+                theta['b'] = np.reshape(theta['b'], (p['N_lim'], 1))
 
-            self._θ = {key: np.asarray(item) for key, item in θ.items()}  # Convert to DeviceArray
+            self._θ = {k: np.asarray(v) for k, v in theta.items()}  # Transfer to device.
 
-        # Setup optimizer
+        # Optimizer
         if optimizer is None:
-            optimizer = {'name': 'sgd', 'step_size': 1e-5}
+            raise ValueError('Optimizer not named.')  # = {'name': 'sgd', 'step_size': 1e-5}
         print(f'Optimizer: {optimizer}')
         opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
         optimizer = {k: v for k, v in optimizer.items() if k != 'name'}
         self.opt_init, self.opt_update, self.get_params = opt_func(**optimizer)
         self._θ: OptimizerState = self.opt_init(self._θ)
 
-        self._ll_grad = value_and_grad(self._ll)
+        # Optimization for offline training. Reduce CPU/GPU data transfer.
+        self.offline = True if offline_data else False
+        if self.offline:
+            self.y, self.s = [np.asarray(data) for data in offline_data]
+            self.rand = np.zeros(0)
 
         self.current_N = 0
         self.current_M = 0
@@ -85,16 +89,35 @@ class GLMJax:
         args = self._check_arrays(y, s)
         return float(self._ll(self.θ, self.params, *args))
 
-    def fit(self, y, s) -> float:
-        args = self._check_arrays(y, s)
-        ll, Δ = self._ll_grad(self.θ, self.params, *args)
-        self._θ: OptimizerState = self.opt_update(self.iter, Δ, self._θ)
+    @profile
+    def fit(self, y, s, return_ll=False):
+        """
+        If offline, (y, s) is not used.
+        """
+        if self.iter % 10000 == 0:
+            # Batch training.
+            self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
 
+        if self.offline:
+            i = self.rand[self.iter % 10000]
+            args = (self.params['N_lim'] * self.params['M_lim'],
+                    self.y[:, i:i+self.params['M_lim']],
+                    self.s[:, i:i+self.params['M_lim']])
+        else:
+            args = self._check_arrays(y, s)
+
+        if return_ll:
+            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)
+        else:
+            Δ = grad(self._ll)(self.θ, self.params, *args)
+
+        self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
         self.iter += 1
-        return float(ll)
+
+        return ll if return_ll else None
 
     def get_grad(self, y, s) -> DeviceArray:
-        return self._ll_grad(self.θ, self.params, *self._check_arrays(y, s))[1]
+        return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))[1]
 
     def _check_arrays(self, y, s) -> Tuple[onp.ndarray]:
         """
@@ -166,23 +189,24 @@ class GLMJax:
         cal_weight = np.concatenate((np.zeros((N, p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]), axis=1)
 
         total = θ["b"][:N] + (cal_stim + cal_weight + cal_hist)
+
         r̂ = p['dt'] * np.exp(total)
         correction = p['dt'] * (np.size(y) - curr_mn)  # Remove padding
 
-        return (np.sum(r̂) - correction - np.sum(y * np.log(r̂ + np.finfo(np.float64).eps))) / curr_mn
+        l1 = p['λ'] * np.mean(np.abs(θ["w"][:N, :N]))
+
+        return (np.sum(r̂) - correction - np.sum(y * np.log(r̂ + np.finfo(np.float64).eps))) / (N * curr_mn) + l1
 
     @staticmethod
     @partial(jit, static_argnums=(0,))
     def _convolve(p: Dict, y, θ_h) -> DeviceArray:
         """
         Sliding window convolution for θ['h'].
-
         """
         cvd = np.zeros((y.shape[0], y.shape[1] - p['dh']))
         for i in np.arange(p['dh']):
             w_col = np.reshape(θ_h[:, i], (p['N_lim'], 1))
             cvd += w_col * y[:, i:p['M_lim'] - (p['dh'] - i)]
-
         return np.concatenate((np.zeros((p['N_lim'], p['dh'])), cvd), axis=1)
 
     @property
@@ -194,69 +218,51 @@ class GLMJax:
         return onp.asarray(self.θ['w'][:self.current_N, :self.current_N])
 
     def __repr__(self):
-        return f'simGLM({self.params}, θ={self.θ}, optimizer={self.optimizer}, gpu={self.use_gpu})'
+        return f'simGLM({self.params}, θ={self.θ}, gpu={self.use_gpu})'
 
     def __str__(self):
-        return f'simGLM Iteration: {self.iter}, Optimizer: {self.optimizer} \n Parameters: {self.params})'
-
-
-def online_sch(i_frame):
-    """ Learning rate schedule for JAX. Linear increase over frame number. """
-    print(i_frame)
-    return 1e-5 * i_frame / 100
+        return f'simGLM Iteration: {self.iter}, \n Parameters: {self.params})'
 
 
 if __name__ == '__main__':  # Test
+    key = random.PRNGKey(42)
     from glm_py import GLMPy
 
-    N = 5
-    M = 20
+    N = 2
+    M = 100
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.1, 'n': 0, 'N_lim': N, 'M_lim': M}
+
+    w = random.normal(key, shape=(N, N)) * 0.001
+    h = random.normal(key, shape=(N, dh)) * 0.001
+    k = random.normal(key, shape=(N, ds)) * 0.001
+    b = random.normal(key, shape=(N, 1)) * 0.001
 
     # w = np.zeros((N, N))
     # h = np.zeros((N, dh))
     # k = np.zeros((N, ds))
     # b = np.zeros((N, 1))
 
-    key = random.PRNGKey(10)
-    w = random.normal(key, shape=(N, N)) * 0.001
-    h = random.normal(key, shape=(N, dh)) * 0.001
-    k = random.normal(key, shape=(N, ds)) * 0.001
-    b = random.normal(key, shape=(N, 1)) * 0.001
-
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
-    model = GLMJax(p, theta, optimizer={'name': 'sgd', 'step_size': 1e-5})# online_sch})
+    model = GLMJax(p, theta)
 
-    onp.random.seed(10)
-    data = onp.random.randn(N, M)  # onp.zeros((8, 50))
-    stim = onp.random.randn(ds, M)
+    sN = 8  #
+    data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
+    stim = onp.random.randn(ds, 2)
+    print(model.ll(data, stim))
+
 
     def gen_ref():
-        ow = onp.asarray(w)[:N, :N]
-        oh = onp.asarray(h)[:N, :]
-        ok = onp.asarray(k)[:N, :]
-        ob = onp.asarray(b)[:N, :]
-        p = {'numNeurons': N, 'hist_dim': dh, 'numSamples': M, 'dt': 0.1, 'stim_dim': ds}
+        ow = onp.asarray(w)[:sN, :sN]
+        oh = onp.asarray(h)[:sN, ...]
+        ok = onp.asarray(k)[:sN, ...]
+        ob = onp.asarray(b)[:sN, ...]
+
+        p = {'numNeurons': sN, 'hist_dim': dh, 'numSamples': M, 'dt': 0.1, 'stim_dim': ds}
         return GLMPy(onp.concatenate((ow, oh, ob, ok), axis=None).flatten(), p)
 
+
     old = gen_ref()
-    old.S = data
-    old.currStimID = stim
-
-    print('Original LL')
-    print(model.ll(data, stim))
     print(old.ll(data, stim))
 
-    print('Original grad - w')
-    print(model.get_grad(data, stim)['w'])
-    print(old.ll_grad(data, stim)[:N*N].reshape(N, N))
-
-    for i in range(100):
-        old.fit()
-        model.fit(data, stim)
-
-    print('LL after 100 steps.')
-    print(model.ll(data, stim))
-    print(old.ll(data, stim))
