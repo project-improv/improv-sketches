@@ -94,11 +94,10 @@ class GLMJax:
         """
         If offline, (y, s) is not used.
         """
-        if self.iter % 10000 == 0:
-            # Batch training.
-            self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
-
         if self.offline:
+            if self.iter % 10000 == 0:
+                # Batch training.
+                self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
             i = self.rand[self.iter % 10000]
             args = (self.params['N_lim'] * self.params['M_lim'],
                     self.y[:, i:i+self.params['M_lim']],
@@ -112,7 +111,6 @@ class GLMJax:
             Δ = grad(self._ll)(self.θ, self.params, *args)
 
         self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
-        self.iter += 1
 
         return ll if return_ll else None
 

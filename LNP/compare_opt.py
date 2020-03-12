@@ -86,8 +86,7 @@ class CompareOpt:
                 if t == 1:  # Avoid JIT
                     t0 = time.time()
 
-                y, s = self.generate_step(t) if not offline else None, None  # Offline case is handled in GLMJax.
-
+                y, s = self.generate_step(t) if not offline else (None, None)  # Offline case is handled in GLMJax.
                 if save_grad and (t == 1 or t % 1000 == 0):
                     self.grad[opt['name']].append(model.get_grad(y, s).copy())
 
@@ -102,8 +101,8 @@ class CompareOpt:
                             maes[idx, j] = mean_absolute_error(model.θ[name], gnd_data[name])
                         binarized = (np.abs(model.θ['w']) > hamming_thr * np.max(np.abs(model.θ['w']))).astype(np.int)
                         res = binarized - gnd_for_hamming
-                        hamming[idx, 0] = np.sum(res == 1) / len(gnd_for_hamming)  # FP
-                        hamming[idx, 1] = np.sum(res == -1) / len(gnd_for_hamming)  # FN
+                        hamming[idx, 0] = np.sum(res == 1) # FP
+                        hamming[idx, 1] = np.sum(res == -1)  # FN
 
                     ll[idx] = model.fit(y, s, return_ll=True)
 
@@ -141,12 +140,11 @@ class CompareOpt:
         self.curr_N = self.N_idx[i] if self.N_idx[i] > self.curr_N else self.curr_N
 
         if i < m:
-            y_step = self.S[:self.curr_N, :i]
-            stim_step = self.stim[:, :i]
+            y_step = self.S[:self.curr_N + 1, :i + 1]
+            stim_step = self.stim[:, :i + 1]
         else:
-            y_step = self.S[:self.curr_N, i - m:i]
+            y_step = self.S[:self.curr_N + 1, i - m:i]
             stim_step = self.stim[:, i - m:i]
-
         return y_step, stim_step
 
 
