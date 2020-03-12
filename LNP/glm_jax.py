@@ -176,6 +176,14 @@ class GLMJax:
     # See https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html#%F0%9F%94%AA-Control-Flow
 
     @staticmethod
+    @jit
+    def log_zero(x):
+        if x == 0.:
+            return 0.
+        else:
+            return np.log(x)
+
+    @staticmethod
     @partial(jit, static_argnums=(1,))
     def _ll(θ: Dict, p: Dict, curr_mn, y, s) -> DeviceArray:
         """
@@ -193,9 +201,13 @@ class GLMJax:
         r̂ = p['dt'] * np.exp(total)
         correction = p['dt'] * (np.size(y) - curr_mn)  # Remove padding
 
-        l1 = p['λ'] * np.mean(np.abs(θ["w"][:N, :N]))
+        l1 = p['λ1'] * np.mean(np.abs(θ["w"][:N, :N]))
+        l2 = p['λ2'] * np.mean(θ["w"][:N, :N]**2)
 
-        return (np.sum(r̂) - correction - np.sum(y * np.log(r̂ + np.finfo(np.float64).eps))) / (N * curr_mn) + l1
+        log_r̂ = np.log(r̂)
+        log_r̂ *= np.isfinite(log_r̂)
+
+        return (np.sum(r̂) - correction - np.sum(y * log_r̂)) / (N * curr_mn) + l1 + l2
 
     @staticmethod
     @partial(jit, static_argnums=(0,))

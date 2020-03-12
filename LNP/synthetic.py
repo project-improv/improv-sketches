@@ -14,22 +14,23 @@ Run GLMJax using synthetic data from `data_gen.py`.
 """
 
 params_raw = pickle.loads(Path('params_dict.pickle').read_bytes())
-window_size = 20000
+window_size = 100000
 params = {
     'N_lim': params_raw['numNeurons'],
     'M_lim': window_size,
     'dh': params_raw['hist_dim'],
-    'dt': params_raw['dt'],
+    'dt': 1,#params_raw['dt'],
     'ds': 1,
     'n': 0,
-    'λ': 0.0004,
+    'λ1': 0.005,
+    'λ2': 0.01
 }
 
 print('Loading data.')
-gnd = pickle.loads(Path('100theta_dict.pickle').read_bytes())
+gnd = pickle.loads(Path('theta_dict.pickle').read_bytes())
 print('Number of non-zero values in gnd θ_w', np.sum(np.abs(gnd['w']) > 0))
 
-y = np.loadtxt('100.txt').astype(np.float32)
+y = np.loadtxt('data_sample.txt').astype(np.float32)
 s = np.zeros((params['ds'], y.shape[1]), dtype=np.float32)
 c = CompareOpt(params, y, s)
 
@@ -54,11 +55,11 @@ def exp_decay(step_size, decay_steps, decay_rate):
     return schedule
 
 optimizers = [
-    {'name': 'adam', 'step_size': exp_decay(4e-2, 5e3, 0.2), 'offline': True},
+    {'name': 'adam', 'step_size': exp_decay(4e-2, 1e3, 0.2), 'offline': True},
 ]
 
 lls = c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=True,
-            iters_offline=10000)
+            iters_offline=3000)
 
 
 #%% Plot θ
