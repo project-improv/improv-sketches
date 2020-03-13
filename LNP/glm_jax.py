@@ -80,12 +80,12 @@ class GLMJax:
         self.current_M = 0
         self.iter = 0
 
-    def ll(self, y, s) -> float:
+    def ll(self, y, s, indicator=None) -> float:
         args = self._check_arrays(y, s)
         return float(self._ll(self.θ, self.params, *args))
 
     @profile
-    def fit(self, y, s, return_ll=False):
+    def fit(self, y, s, return_ll=False, indicator=None):
         if return_ll:
             ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))
         else:
@@ -95,7 +95,7 @@ class GLMJax:
         self.iter += 1
         return ll if return_ll else None
 
-    def get_grad(self, y, s) -> DeviceArray:
+    def get_grad(self, y, s, indicator=None) -> DeviceArray:
         return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s)).copy()
 
     @profile
@@ -216,7 +216,7 @@ class GLMJaxSynthetic(GLMJax):
     def __init__(self, *args, data=None, offline=False, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Optimization for offline training. Reduce CPU/GPU data transfer.
+        # Optimization for offline training.
         self.y, self.s = data
         self.offline = offline
         if self.offline:
@@ -225,7 +225,7 @@ class GLMJaxSynthetic(GLMJax):
         self.ones = onp.ones((self.params['N_lim'], self.params['M_lim']))
 
     @profile
-    def fit(self, y, s, return_ll=False):
+    def fit(self, y, s, return_ll=False, indicator=None):
         if self.offline:
             if len(self.rand) == 0:
                 self.current_M = self.params['M_lim']
