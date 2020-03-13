@@ -1,24 +1,25 @@
 # -*- coding: utf-8 -*-
 
-from functools import partial
 from importlib import import_module
-from typing import Dict, Tuple
 
 import jax.numpy as np
 import numpy as onp
+from functools import partial
 from jax import devices, jit, random, grad, value_and_grad
 from jax.config import config
 from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
+from typing import Dict, Tuple
 
 try:  # kernprof
     profile
 except NameError:
-    def profile(x): return x
+    def profile(x):
+        return x
 
 
 class GLMJax:
-    def __init__(self, p: Dict, theta=None, optimizer=None, use_gpu=False, offline_data=None):
+    def __init__(self, p: Dict, theta=None, optimizer=None, use_gpu=False):
         """
         A JAX implementation of simGLM.
 
@@ -36,7 +37,7 @@ class GLMJax:
         :type optimizer: dict
         :param use_gpu: Use GPU
         :type use_gpu: bool
-        :param offline_data: (y, s) full offline data (to prevent unnecessary CPU/GPU transfers)
+        :param data: (y, s) full offline data (to prevent unnecessary CPU/GPU transfers)
         """
 
         self.use_gpu = use_gpu
@@ -75,12 +76,6 @@ class GLMJax:
         self.opt_init, self.opt_update, self.get_params = opt_func(**optimizer)
         self._θ: OptimizerState = self.opt_init(self._θ)
 
-        # Optimization for offline training. Reduce CPU/GPU data transfer.
-        self.offline = True if offline_data else False
-        if self.offline:
-            self.y, self.s = [np.asarray(data) for data in offline_data]
-            self.rand = np.zeros(0)
-
         self.current_N = 0
         self.current_M = 0
         self.iter = 0
@@ -91,33 +86,20 @@ class GLMJax:
 
     @profile
     def fit(self, y, s, return_ll=False):
-        """
-        If offline, (y, s) is not used.
-        """
-        if self.offline:
-            if self.iter % 10000 == 0:
-                # Batch training.
-                self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
-            i = self.rand[self.iter % 10000]
-            args = (self.params['N_lim'] * self.params['M_lim'],
-                    self.y[:, i:i+self.params['M_lim']],
-                    self.s[:, i:i+self.params['M_lim']])
-        else:
-            args = self._check_arrays(y, s)
-
         if return_ll:
-            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)
+            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))
         else:
-            Δ = grad(self._ll)(self.θ, self.params, *args)
+            Δ = grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))
 
         self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
-
+        self.iter += 1
         return ll if return_ll else None
 
     def get_grad(self, y, s) -> DeviceArray:
-        return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))[1]
+        return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s)).copy()
 
-    def _check_arrays(self, y, s) -> Tuple[onp.ndarray]:
+    @profile
+    def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
         """
         Check validity of input arrays and pad to N_lim and M_lim.
         :return padded arrays
@@ -135,20 +117,25 @@ class GLMJax:
             self._increase_θ_size()
             N_lim = self.params['N_lim']
 
-        # Pad
+        # Matrix to indicate whether entry (i,j) is real data or zero-padding.
+        if indicator is None:
+            indicator = onp.ones(y.shape)
+
         if y.shape[0] < N_lim:
-            y = onp.concatenate((y, onp.zeros((N_lim - y.shape[0], y.shape[1]))), axis=0)
+            curr_size = y.shape[0]
+            y = onp.vstack((y, onp.zeros((N_lim - curr_size, y.shape[1]))))
+            indicator = onp.vstack((indicator, onp.zeros((N_lim - curr_size, y.shape[1]))))
 
         if y.shape[1] < M_lim:
             curr_size = y.shape[1]
-            y = onp.concatenate((y, onp.zeros((N_lim, M_lim - curr_size))), axis=1)
-            s = onp.concatenate((s, onp.zeros((self.params['ds'], M_lim - curr_size))), axis=1)
+            y = onp.hstack((y, onp.zeros((N_lim, M_lim - curr_size))))
+            s = onp.hstack((s, onp.zeros((self.params['ds'], M_lim - curr_size))))
+            indicator = onp.hstack((indicator, onp.zeros((N_lim, M_lim - curr_size))))
 
         if y.shape[1] > M_lim:
-            raise ValueError('Data are too wide (M exceeds limit).')
+            raise ValueError('Data are too wide (M exceeds M_lim).')
 
-        self.iter += 1
-        return self.current_M * self.current_N, y, s
+        return self.current_M, self.current_N, y, s, indicator
 
     def _increase_θ_size(self) -> None:
         """
@@ -159,12 +146,13 @@ class GLMJax:
         print(f"Increasing neuron limit to {2 * N_lim}.")
         self._θ = self.θ
 
-        self._θ['w'] = np.concatenate((self._θ['w'], np.zeros((N_lim, N_lim))), axis=1)
-        self._θ['w'] = np.concatenate((self._θ['w'], np.zeros((N_lim, 2 * N_lim))), axis=0)
+        self._θ['w'] = onp.concatenate((self._θ['w'], onp.zeros((N_lim, N_lim))), axis=1)
+        self._θ['w'] = onp.concatenate((self._θ['w'], onp.zeros((N_lim, 2 * N_lim))), axis=0)
 
-        self._θ['h'] = np.concatenate((self._θ['h'], np.zeros((N_lim, self.params['dh']))), axis=0)
-        self._θ['b'] = np.concatenate((self._θ['b'], np.zeros((N_lim, 1))), axis=0)
-        self._θ['k'] = np.concatenate((self._θ['k'], np.zeros((N_lim, self.params['ds']))), axis=0)
+        self._θ['h'] = onp.concatenate((self._θ['h'], onp.zeros((N_lim, self.params['dh']))), axis=0)
+        self._θ['b'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
+        self._θ['k'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
+
         self.params['N_lim'] = 2 * N_lim
         self._θ = self.opt_init(self._θ)
 
@@ -174,38 +162,28 @@ class GLMJax:
     # See https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html#%F0%9F%94%AA-Control-Flow
 
     @staticmethod
-    @jit
-    def log_zero(x):
-        if x == 0.:
-            return 0.
-        else:
-            return np.log(x)
-
-    @staticmethod
     @partial(jit, static_argnums=(1,))
-    def _ll(θ: Dict, p: Dict, curr_mn, y, s) -> DeviceArray:
+    def _ll(θ: Dict, p: Dict, m, n, y, s, indicator) -> DeviceArray:
         """
         Log-likelihood of a Poisson GLM.
 
         """
-        N = p['N_lim']
-        cal_stim = θ["k"][:N, :] @ s
-        cal_hist = GLMJax._convolve(p, y, θ["h"][:N, :])
-        cal_weight = θ["w"][:N, :N] @ y
-        cal_weight = np.concatenate((np.zeros((N, p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]), axis=1)
+        cal_stim = θ["k"] @ s
+        cal_hist = GLMJax._convolve(p, y, θ["h"])
+        cal_weight = θ["w"] @ y
+        # Necessary padding since history convolution shrinks M.
+        cal_weight = np.hstack((np.zeros((p['N_lim'], p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]))
 
-        total = θ["b"][:N] + (cal_stim + cal_weight + cal_hist)
+        total = θ["b"] + (cal_stim + cal_weight + cal_hist)
+        log_r̂ = np.log(p['dt']) + total
 
         r̂ = p['dt'] * np.exp(total)
-        correction = p['dt'] * (np.size(y) - curr_mn)  # Remove padding
+        r̂ *= indicator
 
-        l1 = p['λ1'] * np.mean(np.abs(θ["w"][:N, :N]))
-        l2 = p['λ2'] * np.mean(θ["w"][:N, :N]**2)
+        l1 = p['λ1'] * np.mean(np.abs(θ["w"]))
+        l2 = p['λ2'] * np.mean(θ["w"] ** 2)
 
-        log_r̂ = np.log(r̂)
-        log_r̂ *= np.isfinite(log_r̂)
-
-        return (np.sum(r̂) - correction - np.sum(y * log_r̂)) / (N * curr_mn) + l1 + l2
+        return (np.sum(r̂) - np.sum(y * log_r̂)) / (m * n ** 2) + l1 + l2
 
     @staticmethod
     @partial(jit, static_argnums=(0,))
@@ -217,11 +195,11 @@ class GLMJax:
         for i in np.arange(p['dh']):
             w_col = np.reshape(θ_h[:, i], (p['N_lim'], 1))
             cvd += w_col * y[:, i:p['M_lim'] - (p['dh'] - i)]
-        return np.concatenate((np.zeros((p['N_lim'], p['dh'])), cvd), axis=1)
+        return np.hstack((np.zeros((p['N_lim'], p['dh'])), cvd))
 
     @property
     def θ(self) -> Dict:
-        return self.get_params(self._θ)
+        return self.get_params(self._θ).copy()
 
     @property
     def weights(self) -> onp.ndarray:
@@ -232,6 +210,53 @@ class GLMJax:
 
     def __str__(self):
         return f'simGLM Iteration: {self.iter}, \n Parameters: {self.params})'
+
+
+class GLMJaxSynthetic(GLMJax):
+    def __init__(self, *args, data=None, offline=False, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Optimization for offline training. Reduce CPU/GPU data transfer.
+        self.y, self.s = data
+        self.offline = offline
+        if self.offline:
+            self.rand = onp.zeros(0)  # Shuffle, batch training.
+
+        self.ones = onp.ones((self.params['N_lim'], self.params['M_lim']))
+
+    @profile
+    def fit(self, y, s, return_ll=False):
+        if self.offline:
+            if len(self.rand) == 0:
+                self.current_M = self.params['M_lim']
+                self.current_N = self.params['N_lim']
+
+            if self.iter % 10000 == 0:
+                self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
+
+            i = self.rand[self.iter % 10000]
+            args = (self.params['M_lim'], self.params['N_lim'],
+                    self.y[:, i:i + self.params['M_lim']],
+                    self.s[:, i:i + self.params['M_lim']], self.ones)
+        else:
+            if self.iter < self.params['M_lim']:
+                y_step = self.y[:, :self.iter + 1]
+                stim_step = self.s[:, :self.iter + 1]
+                args = self._check_arrays(y_step, stim_step)
+            else:
+                y_step = self.y[:, self.iter - self.params['M_lim']: self.iter]
+                stim_step = self.s[:, self.iter - self.params['M_lim']: self.iter]
+                args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, self.ones)
+
+        if return_ll:
+            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)
+        else:
+            Δ = grad(self._ll)(self.θ, self.params, *args)
+
+        self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
+        self.iter += 1
+
+        return ll if return_ll else None
 
 
 if __name__ == '__main__':  # Test
@@ -248,11 +273,6 @@ if __name__ == '__main__':  # Test
     h = random.normal(key, shape=(N, dh)) * 0.001
     k = random.normal(key, shape=(N, ds)) * 0.001
     b = random.normal(key, shape=(N, 1)) * 0.001
-
-    # w = np.zeros((N, N))
-    # h = np.zeros((N, dh))
-    # k = np.zeros((N, ds))
-    # b = np.zeros((N, 1))
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
     model = GLMJax(p, theta)
@@ -275,4 +295,3 @@ if __name__ == '__main__':  # Test
 
     old = gen_ref()
     print(old.ll(data, stim))
-

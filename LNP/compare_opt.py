@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error
 
-from glm_jax import GLMJax
+from glm_jax import GLMJaxSynthetic
 
 """
 Create a log-likelihood graph over time using different optimizers.
@@ -16,7 +16,8 @@ Create a log-likelihood graph over time using different optimizers.
 try:  # kernprof
     profile
 except NameError:
-    def profile(x): return x
+    def profile(x):
+        return x
 
 
 class CompareOpt:
@@ -34,13 +35,13 @@ class CompareOpt:
         self.lls = dict()
         self.maes = dict()
         self.hamming = dict()
-        self.theta_names = ['b', 'h', 'w']
+        self.names_θ = ['b', 'h', 'w']
 
         for i in range(self.total_M):  # Number of neurons at each time step.
             self.N_idx[i] = np.argmin(np.cumsum(self.S[:, i][::-1])[::-1])
 
     @profile
-    def run(self, optimizers, theta=None, resume=False, save_grad=False, save_theta=False, use_gpu=False, gnd_data=None,
+    def run(self, optimizers, theta=None, resume=False, save_grad=None, save_theta=None, use_gpu=False, gnd_data=None,
             iters_offline=None, checkpoint=100, hamming_thr=0.2):
         """
         optimizers: a list of dict.
@@ -56,25 +57,26 @@ class CompareOpt:
         """
 
         for opt in optimizers:
-            name = opt['name']
             offline = opt.get('offline', False)
+            print('Offline:', offline)
             iters = self.total_M if not offline else iters_offline
-
+            name = opt['name'] if not offline else f"{opt['name']}_offline"
 
             if resume and name in self.model:
                 model = self.model[name]
                 self.lls[name] = ll = np.hstack([self.lls[name], np.zeros(int(iters / checkpoint))])
-                self.maes[name] = maes = np.vstack([self.mses[name], np.zeros((int(iters / checkpoint), len(self.theta_names)))])
+                self.maes[name] = maes = np.vstack(
+                    [self.maes[name], np.zeros((int(iters / checkpoint), len(self.names_θ)))])
                 self.hamming[name] = hamming = np.vstack([self.hamming[name], np.zeros((int(iters / checkpoint), 2))])
 
             else:
                 opt_ = {k: v for k, v in opt.items() if k != 'offline'}
-                offline_data = (self.S, self.stim) if offline else None
-                self.model[name] = model = GLMJax(self.params, optimizer=opt_, use_gpu=use_gpu, theta=theta, offline_data=offline_data)
+                self.model[name] = model = GLMJaxSynthetic(self.params, optimizer=opt_, use_gpu=use_gpu, theta=theta,
+                                                           data=(self.S, self.stim), offline=offline)
                 self.grad[name] = list()
                 self.theta[name] = list()
                 self.lls[name] = ll = np.zeros(int(iters / checkpoint))
-                self.maes[name] = maes = np.zeros((int(iters / checkpoint), len(self.theta_names)))
+                self.maes[name] = maes = np.zeros((int(iters / checkpoint), len(self.names_θ)))
                 self.hamming[name] = hamming = np.zeros((int(iters / checkpoint), 2))
 
             if gnd_data:
@@ -82,36 +84,35 @@ class CompareOpt:
 
             print('Total iterations: ', iters)
 
-            for t in range(iters):
-                if t == 1:  # Avoid JIT
+            for i in range(iters):
+                if i == 1:  # Avoid JIT
                     t0 = time.time()
 
-                y, s = self.generate_step(t) if not offline else (None, None)  # Offline case is handled in GLMJax.
-                if save_grad and (t == 1 or t % 1000 == 0):
-                    self.grad[opt['name']].append(model.get_grad(y, s).copy())
+                y, s = (None, None)  # Offline case is handled in GLMJax.
+                if save_grad and (i == 1 or i % save_grad == 0):
+                    self.grad[name].append(model.get_grad(y, s))
 
-                if save_theta and (t == 1 or t % 1000 == 0):
-                    self.theta[opt['name']].append(model.θ.copy())
+                if save_theta and (i == 1 or i % save_theta == 0):
+                    self.theta[name].append(model.θ)
 
-                if t % checkpoint == 0:
-                    idx = int(model.iter/checkpoint)
+                if i % checkpoint == 0:
+                    idx = int(model.iter / checkpoint)
 
                     if gnd_data:
-                        for j, name in enumerate(self.theta_names):
-                            maes[idx, j] = mean_absolute_error(model.θ[name], gnd_data[name])
+                        for j, name_θ in enumerate(self.names_θ):
+                            maes[idx, j] = mean_absolute_error(model.θ[name_θ], gnd_data[name_θ])
                         binarized = (np.abs(model.θ['w']) > hamming_thr * np.max(np.abs(model.θ['w']))).astype(np.int)
                         res = binarized - gnd_for_hamming
-                        hamming[idx, 0] = np.sum(res == 1) # FP
+                        hamming[idx, 0] = np.sum(res == 1)  # FP
                         hamming[idx, 1] = np.sum(res == -1)  # FN
 
                     ll[idx] = model.fit(y, s, return_ll=True)
 
-                    if t > 50 and ll[idx] > 1e5:
-                        raise Exception(f'Blew up at {t}.')
+                    if i > checkpoint and ll[idx] > 1e5:
+                        raise Exception(f'Blew up at {i}.')
 
-                    if t % int(iters / 20) == 0:
-                        print(
-                            f"{opt['name']}, step: {checkpoint*idx:5.0f}, w_norm: {maes[idx, 2]:8.5e}, hamming: {hamming[idx,0], hamming[idx,1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
+                    if i % (checkpoint * 10) == 0:
+                        print(f"{opt['name']}, step: {checkpoint * idx:5.0f}, w_norm: {maes[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
                     model.fit(y, s, return_ll=False)
@@ -133,19 +134,6 @@ class CompareOpt:
                 return 1e5
 
         return skopt.gp_minimize(_opt_func, space, n_calls=n_calls, random_state=seed, noise=1e-10)
-
-    def generate_step(self, i):
-        m = self.params['M_lim']
-
-        self.curr_N = self.N_idx[i] if self.N_idx[i] > self.curr_N else self.curr_N
-
-        if i < m:
-            y_step = self.S[:self.curr_N + 1, :i + 1]
-            stim_step = self.stim[:, :i + 1]
-        else:
-            y_step = self.S[:self.curr_N + 1, i - m:i]
-            stim_step = self.stim[:, i - m:i]
-        return y_step, stim_step
 
 
 if __name__ == '__main__':
@@ -204,4 +192,3 @@ if __name__ == '__main__':
     #     skopt.space.Real(1e-6, 1e-4, name='step_size', prior='uniform'),
     # ]
     # x = c.hyper_opt('sgd', space, n_calls=15)
-
