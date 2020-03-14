@@ -68,7 +68,7 @@ class GLMJax:
 
         # Optimizer
         if optimizer is None:
-            raise ValueError('Optimizer not named.')  # = {'name': 'sgd', 'step_size': 1e-5}
+            raise ValueError('Optimizer not named.')
         print(f'Optimizer: {optimizer}')
         opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
         optimizer = {k: v for k, v in optimizer.items() if k != 'name'}
@@ -79,9 +79,8 @@ class GLMJax:
         self.current_M = 0
         self.iter = 0
 
-    def ll(self, y, s, indicator=None) -> float:
-        args = self._check_arrays(y, s, indicator)
-        return float(self._ll(self.θ, self.params, *args))
+    def ll(self, y, s, indicator=None):
+        return self._ll(self.θ, self.params, *self._check_arrays(y, s, indicator))
 
     @profile
     def fit(self, y, s, return_ll=False, indicator=None):
@@ -94,8 +93,13 @@ class GLMJax:
         self.iter += 1
         return ll if return_ll else None
 
-    def get_grad(self, y, s, indicator=None) -> DeviceArray:
+    def grad(self, y, s, indicator=None) -> DeviceArray:
         return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator)).copy()
+
+    def predict(self, y, s, indicator=None):
+        y, s, indicator = self._check_arrays(y, s, indicator)[2:]
+        log_r̂ = GLMJax._predict(self.θ, self.params, y, s)
+        return np.exp(log_r̂) * indicator
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -162,10 +166,9 @@ class GLMJax:
 
     @staticmethod
     @partial(jit, static_argnums=(1,))
-    def _ll(θ: Dict, p: Dict, m, n, y, s, indicator) -> DeviceArray:
+    def _predict(θ: Dict, p: Dict, y, s) -> DeviceArray:
         """
-        Log-likelihood of a Poisson GLM.
-
+        Return log rates from the model.
         """
         cal_stim = θ["k"] @ s
         cal_hist = GLMJax._convolve(p, y, θ["h"])
@@ -173,10 +176,19 @@ class GLMJax:
         # Necessary padding since history convolution shrinks M.
         cal_weight = np.hstack((np.zeros((p['N_lim'], p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]))
 
-        total = θ["b"] + (cal_stim + cal_weight + cal_hist)
-        log_r̂ = np.log(p['dt']) + total
+        return θ["b"] + (cal_stim + cal_weight + cal_hist) + np.log(p['dt'])
 
-        r̂ = p['dt'] * np.exp(total)
+
+    @staticmethod
+    @partial(jit, static_argnums=(1,))
+    def _ll(θ: Dict, p: Dict, m, n, y, s, indicator) -> DeviceArray:
+        """
+        Log-likelihood of a Poisson GLM.
+
+        """
+        log_r̂ = GLMJax._predict(θ, p, y, s)
+
+        r̂ = np.exp(log_r̂)
         r̂ *= indicator
 
         l1 = p['λ1'] * np.mean(np.abs(θ["w"]))
