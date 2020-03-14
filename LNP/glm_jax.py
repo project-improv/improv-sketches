@@ -37,7 +37,6 @@ class GLMJax:
         :type optimizer: dict
         :param use_gpu: Use GPU
         :type use_gpu: bool
-        :param data: (y, s) full offline data (to prevent unnecessary CPU/GPU transfers)
         """
 
         self.use_gpu = use_gpu
@@ -81,22 +80,22 @@ class GLMJax:
         self.iter = 0
 
     def ll(self, y, s, indicator=None) -> float:
-        args = self._check_arrays(y, s)
+        args = self._check_arrays(y, s, indicator)
         return float(self._ll(self.θ, self.params, *args))
 
     @profile
     def fit(self, y, s, return_ll=False, indicator=None):
         if return_ll:
-            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))
+            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator))
         else:
-            Δ = grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s))
+            Δ = grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator))
 
         self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
         self.iter += 1
         return ll if return_ll else None
 
     def get_grad(self, y, s, indicator=None) -> DeviceArray:
-        return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s)).copy()
+        return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator)).copy()
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -214,23 +213,36 @@ class GLMJax:
 
 class GLMJaxSynthetic(GLMJax):
     def __init__(self, *args, data=None, offline=False, indicator=None, **kwargs):
+
+        """
+        GLMJax with data handling. Data are given to the constructor.
+
+        If offline:
+            If M_lim == y.shape[1]: The entire (y, s) is passed into the fit function.
+            If M_lim > y.shape[1]: A random slice of width M_lim is used. See `self.rand`.
+
+        If not online:
+            Data of width `self.iter` are used until `self.iter` > M_lim.
+            Then, a sliding window of width M_lim is used instead.
+        """
+
         super().__init__(*args, **kwargs)
 
-        # Optimization for offline training.
         self.y, self.s = data
         self.offline = offline
         if self.offline:
             self.rand = onp.zeros(0)  # Shuffle, batch training.
+            self.current_M = self.params['M_lim']
+            self.current_N = self.params['N_lim']
 
         self.indicator = indicator if indicator is not None else onp.ones((self.params['N_lim'], self.params['M_lim']))
 
-    @profile
-    def fit(self, y, s, return_ll=False):
-        if self.offline:
-            if len(self.rand) == 0:
-                self.current_M = self.params['M_lim']
-                self.current_N = self.params['N_lim']
+        assert self.y.shape[1] == self.s.shape[1]
+        assert self.y.shape[1] >= self.current_M
 
+    @profile
+    def fit(self, return_ll=False):
+        if self.offline:
             if self.iter % 10000 == 0:
                 self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
 
@@ -238,12 +250,13 @@ class GLMJaxSynthetic(GLMJax):
             args = (self.params['M_lim'], self.params['N_lim'],
                     self.y[:, i:i + self.params['M_lim']],
                     self.s[:, i:i + self.params['M_lim']], self.indicator)
+
         else:
-            if self.iter < self.params['M_lim']:
+            if self.iter < self.params['M_lim']:  # Increasing width.
                 y_step = self.y[:, :self.iter + 1]
                 stim_step = self.s[:, :self.iter + 1]
                 args = self._check_arrays(y_step, stim_step, indicator=self.indicator)
-            else:
+            else:  # Sliding window.
                 y_step = self.y[:, self.iter - self.params['M_lim']: self.iter]
                 stim_step = self.s[:, self.iter - self.params['M_lim']: self.iter]
                 args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, self.indicator)

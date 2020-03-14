@@ -62,7 +62,7 @@ class CompareOpt:
             iters = self.total_M if not offline else iters_offline
             name = opt['name'] if not offline else f"{opt['name']}_offline"
 
-            if resume and name in self.model:
+            if resume and name in self.model:  # Continue training.
                 model = self.model[name]
                 self.lls[name] = ll = np.hstack([self.lls[name], np.zeros(int(iters / checkpoint))])
                 self.maes[name] = maes = np.vstack(
@@ -105,7 +105,7 @@ class CompareOpt:
                         hamming[idx, 0] = np.sum(res == 1)  # FP
                         hamming[idx, 1] = np.sum(res == -1)  # FN
 
-                    ll[idx] = model.fit(None, None, return_ll=True)
+                    ll[idx] = model.fit(return_ll=True)
 
                     if i > checkpoint and ll[idx] > 1e5:
                         raise Exception(f'Blew up at {i}.')
@@ -114,7 +114,7 @@ class CompareOpt:
                         print(f"{opt['name']}, step: {checkpoint * idx:5.0f}, w_norm: {maes[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
-                    model.fit(None, None, return_ll=False)
+                    model.fit(return_ll=False)
 
             print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step")
 
