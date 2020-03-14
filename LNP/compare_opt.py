@@ -42,7 +42,7 @@ class CompareOpt:
 
     @profile
     def run(self, optimizers, theta=None, resume=False, save_grad=None, save_theta=None, use_gpu=False, gnd_data=None,
-            iters_offline=None, checkpoint=100, hamming_thr=0.2):
+            iters_offline=None, checkpoint=100, hamming_thr=0.2, indicator=None):
         """
         optimizers: a list of dict.
         theta: dict of weights.
@@ -72,7 +72,7 @@ class CompareOpt:
             else:
                 opt_ = {k: v for k, v in opt.items() if k != 'offline'}
                 self.model[name] = model = GLMJaxSynthetic(self.params, optimizer=opt_, use_gpu=use_gpu, theta=theta,
-                                                           data=(self.S, self.stim), offline=offline)
+                                                           data=(self.S, self.stim), offline=offline, indicator=indicator)
                 self.grad[name] = list()
                 self.theta[name] = list()
                 self.lls[name] = ll = np.zeros(int(iters / checkpoint))
@@ -88,7 +88,6 @@ class CompareOpt:
                 if i == 1:  # Avoid JIT
                     t0 = time.time()
 
-                y, s = (None, None)  # Offline case is handled in GLMJax.
                 if save_grad and (i == 1 or i % save_grad == 0):
                     self.grad[name].append(model.get_grad(y, s))
 
@@ -106,7 +105,7 @@ class CompareOpt:
                         hamming[idx, 0] = np.sum(res == 1)  # FP
                         hamming[idx, 1] = np.sum(res == -1)  # FN
 
-                    ll[idx] = model.fit(y, s, return_ll=True)
+                    ll[idx] = model.fit(None, None, return_ll=True)
 
                     if i > checkpoint and ll[idx] > 1e5:
                         raise Exception(f'Blew up at {i}.')
@@ -115,7 +114,7 @@ class CompareOpt:
                         print(f"{opt['name']}, step: {checkpoint * idx:5.0f}, w_norm: {maes[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
-                    model.fit(y, s, return_ll=False)
+                    model.fit(None, None, return_ll=False)
 
             print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step")
 
@@ -137,17 +136,6 @@ class CompareOpt:
 
 
 if __name__ == '__main__':
-
-    def online_sch(M, step_size, decay_steps, decay_rate):
-        def schedule(i):
-            if i < M:
-                return step_size * i / M
-            else:
-                return step_size  # * decay_rate ** (i / decay_steps)
-
-        """ Learning rate schedule for JAX. Linear increase over frame number. """
-        return schedule
-
 
     params = {'dh': 2, 'ds': 8, 'dt': 0.1, 'n': 0, 'N_lim': 100, 'M_lim': 100}
     optimizers = [

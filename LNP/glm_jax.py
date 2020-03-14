@@ -213,7 +213,7 @@ class GLMJax:
 
 
 class GLMJaxSynthetic(GLMJax):
-    def __init__(self, *args, data=None, offline=False, **kwargs):
+    def __init__(self, *args, data=None, offline=False, indicator=None, **kwargs):
         super().__init__(*args, **kwargs)
 
         # Optimization for offline training.
@@ -222,10 +222,10 @@ class GLMJaxSynthetic(GLMJax):
         if self.offline:
             self.rand = onp.zeros(0)  # Shuffle, batch training.
 
-        self.ones = onp.ones((self.params['N_lim'], self.params['M_lim']))
+        self.indicator = indicator if indicator is not None else onp.ones((self.params['N_lim'], self.params['M_lim']))
 
     @profile
-    def fit(self, y, s, return_ll=False, indicator=None):
+    def fit(self, y, s, return_ll=False):
         if self.offline:
             if len(self.rand) == 0:
                 self.current_M = self.params['M_lim']
@@ -237,16 +237,16 @@ class GLMJaxSynthetic(GLMJax):
             i = self.rand[self.iter % 10000]
             args = (self.params['M_lim'], self.params['N_lim'],
                     self.y[:, i:i + self.params['M_lim']],
-                    self.s[:, i:i + self.params['M_lim']], self.ones)
+                    self.s[:, i:i + self.params['M_lim']], self.indicator)
         else:
             if self.iter < self.params['M_lim']:
                 y_step = self.y[:, :self.iter + 1]
                 stim_step = self.s[:, :self.iter + 1]
-                args = self._check_arrays(y_step, stim_step)
+                args = self._check_arrays(y_step, stim_step, indicator=self.indicator)
             else:
                 y_step = self.y[:, self.iter - self.params['M_lim']: self.iter]
                 stim_step = self.s[:, self.iter - self.params['M_lim']: self.iter]
-                args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, self.ones)
+                args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, self.indicator)
 
         if return_ll:
             ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)

@@ -14,22 +14,22 @@ Run GLMJax using synthetic data from `data_gen.py`.
 """
 
 params_raw = pickle.loads(Path('params_dict.pickle').read_bytes())
-window_size = 10000
+window_size = 20000
 params = {
     'N_lim': params_raw['numNeurons'],
     'M_lim': window_size,
     'dh': params_raw['hist_dim'],
     'dt': 1,  # params_raw['dt'],
     'ds': 1,
-    'λ1': 0.02,
-    'λ2': 0.05
+    'λ1': 0.015,
+    'λ2': 0.02
 }
 
 print('Loading data.')
 gnd = pickle.loads(Path('theta_dict.pickle').read_bytes())
 print('Number of non-zero values in gnd θ_w:', np.sum(np.abs(gnd['w']) > 0))
 
-y = np.loadtxt('data_sample.txt').astype(np.float32)  # [:, :10000]
+y = np.loadtxt('data_sample.txt').astype(np.float32)[:, :20000]
 s = np.zeros((params['ds'], y.shape[1]), dtype=np.float32)
 c = CompareOpt(params, y, s)
 
@@ -63,11 +63,16 @@ def offline_decay(step_size, decay_steps, decay_rate):
 
 optimizers = [
     # {'name': 'adam', 'step_size': online_decay(2e-2, 2e4, 0.1)},
-    {'name': 'adam', 'step_size': offline_decay(1e-2, 2e4, 0.1), 'offline': True},
+    {'name': 'adam', 'step_size': offline_decay(2e-2, 1e4, 0.1), 'offline': True},
 ]
 
+indicator = np.ones(y.shape)
+indicator[:, :10000] = 0.
+
+y[:, :10000] = 0.
+
 lls = c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
-            save_grad=None, iters_offline=5000)
+            save_grad=None, iters_offline=10000, indicator=indicator)
 
 # %% Plot θ
 fig, ax = plt.subplots(figsize=(8, 12), nrows=3, ncols=2, dpi=200)
