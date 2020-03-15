@@ -63,16 +63,57 @@ def offline_decay(step_size, decay_steps, decay_rate):
 
 optimizers = [
     # {'name': 'adam', 'step_size': online_decay(2e-2, 2e4, 0.1)},
-    {'name': 'adam', 'step_size': offline_decay(2e-2, 1e4, 0.1), 'offline': True},
+    {'name': 'adam', 'step_size': offline_decay(5e-3, 1e4, 0.1), 'offline': True},
 ]
 
 indicator = np.ones(y.shape)
-indicator[:, :10000] = 0.
+# indicator[:, :10000] = 0.
+# y[:, :10000] = 0.
 
-y[:, :10000] = 0.
+def regularization_path(r: np.ndarray):
+    out = np.zeros((len(r), params['N_lim']**2))
+    for i, v in enumerate(r):
+        p = params.copy()
+        p['λ1'] = v
+        print(f"{p['λ1']= }")
+        c = CompareOpt(p, y, s)
+        c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
+              save_grad=None, iters_offline=20000, indicator=indicator)
+        out[i, :] = c.theta['adam_offline'][-1]['w'].reshape(p['N_lim']**2)
 
+        plt.imshow(np.abs(c.theta['adam_offline'][-1]['w']))
+        plt.show()
+
+    return out
+
+def plot_rp(lambdas, theta):
+    from matplotlib import rc, rcParams
+    rc('text', usetex=True)
+    rcParams['font.family'] = 'serif'
+
+    fig, ax = plt.subplots(dpi=300, figsize=(5, 4))
+    for i, x in enumerate(gnd['w'].reshape(gnd['w'].size)):
+        ax.scatter([1e-4], gnd['w'].reshape(gnd['w'].size)[i], )
+    ax.semilogx(lambdas, theta)
+    ax.set_title(f"$\\ell_1$ Regularization Path. $N={params['N_lim']}$, ${window_size}$ Steps", loc='left')
+    ax.set_xlabel('$\\lambda$')
+
+    plt.tight_layout()
+    plt.savefig('regularization_path.png')
+
+    plt.show()
+
+
+# if __name__ == '__main__':
+#     λs = np.logspace(-4, -1, 30)
+#     th = regularization_path(λs)
+#     plot_rp(λs, th)
+
+
+
+c = CompareOpt(params, y, s)
 lls = c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
-            save_grad=None, iters_offline=10000, indicator=indicator)
+        save_grad=None, iters_offline=10000, indicator=None, hamming_thr=0.05)
 
 # %% Plot θ
 fig, ax = plt.subplots(figsize=(8, 12), nrows=3, ncols=2, dpi=200)
