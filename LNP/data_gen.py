@@ -1,12 +1,13 @@
 import pickle
 
-from multiprocessing import Pool
+from multiprocessing import Pool, set_start_method
+
+set_start_method('fork')
 
 import matplotlib.pyplot as plt
+import numba
 import numpy as np
 import seaborn as sns
-
-from scipy.stats import poisson
 
 sns.set()
 
@@ -79,33 +80,26 @@ def generateModel(params):
     return theta
 
 
-def generateData(theta, params, m):
+@numba.jit(nopython=True)
+def generateData(w, h, b, dt, dh, N, m):
     '''
     Generates spike counts from the model
     Returns a data dict:
     data['y']: spikes for each time step
     data['r']: firing rates (lambda) for each time step
     '''
-    # constants
-    dh = params['hist_dim']
-    N = int(params['numNeurons'])
-    # M = int(params['numSamples'])
 
     # nonlinearity; exp()
-    f = params['f']
-
-    # model parameters
-    w = theta['w']
-    h = theta['h']
-    b = theta['b']
+    f = np.exp  # params['f']
 
     # store output in a dictionary
-    data = {'y': np.zeros((N, m)), 'r': np.zeros((N, m))}  # spikes, rates
+    y = np.zeros((N, m))
+    r = np.zeros((N, m))  # spikes, rates
 
     # the initial rate (no history); generate randomly
     init = 2 * np.random.randn(m)
-    data['y'][:, 0] = poisson.rvs(f(init[0]))
-    data['r'][:, 0] = f(init[0])
+    y[:, 0] = np.random.poisson(f(init[0]))
+    r[:, 0] = f(init[0])
 
     # simulate the model for next M samples (time steps)
     for j in range(m):  # step through time
@@ -114,26 +108,23 @@ def generateData(theta, params, m):
             if j < 1:
                 hist = 0
             elif j < dh:
-                hist = np.sum(np.flip(h[i, :j]) * data['y'][i, :j])
+                hist = np.sum(h[i, :j] * y[i, :j])
             else:
-                hist = np.sum(np.flip(h[i, :]) * data['y'][i, j - dh:j])
+                hist = np.sum(h[i, :] * y[i, j - dh:j])
 
             if j > 0:
-                weights = w[i, :].dot(data['y'][:, j - 1])
+                weights = w[i, :].dot(y[:, j - 1])
             else:
                 weights = 0
 
-            r = f(b[i] + hist + weights)
+            r[i, j] = f(b[i] + hist + weights)
+            y[i, j] = np.random.poisson(r[i, j] * dt)
 
-            # draw spikes
-            data['r'][i, j] = r
-            data['y'][i, j] = poisson.rvs(r * p['dt'])
-
-    return data
+    return r, y
 
 
 if __name__ == '__main__':
-    p = setParameters(n=50, dh=10, m=1e5, alpha=0.05)
+    p = setParameters(n=100, dh=10, m=2e5, alpha=0.05)
 
     print('Generating model...')
     theta = generateModel(p)
@@ -151,17 +142,19 @@ if __name__ == '__main__':
     print(theta['w'])
     print('Simulating model...')
 
-    cores = 4
+    cores = 8
     M = p['numSamples']
     M_core = [M // cores] * (cores - 1) + [M - M // cores * (cores - 1)]
 
+
     def proc(m):
-        return generateData(theta, p, m)
+        return generateData(theta['w'], np.flip(theta['h']), theta['b'], p['dt'], p['hist_dim'], p['numNeurons'], m)
+
 
     with Pool(cores) as pool:
         futures = list(pool.map(proc, M_core))
 
-    y, r = np.hstack([d['y'] for d in futures]), np.hstack([d['r'] for d in futures])
+    r, y = np.hstack([r for (r, y) in futures]), np.hstack([y for (r, y) in futures])
     data = {'y': y, 'r': r}
 
     print('Spike Counts:')
