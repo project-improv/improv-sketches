@@ -19,7 +19,7 @@ except NameError:
 
 
 class GLMJax:
-    def __init__(self, p: Dict, theta=None, optimizer=None, use_gpu=False):
+    def __init__(self, p: Dict, theta=None, optimizer=None, use_gpu=False, rpf=1):
         """
         A JAX implementation of simGLM.
 
@@ -72,8 +72,11 @@ class GLMJax:
         print(f'Optimizer: {optimizer}')
         opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
         optimizer = {k: v for k, v in optimizer.items() if k != 'name'}
-        self.opt_init, self.opt_update, self.get_params = opt_func(**optimizer)
+        self.opt_init, self.opt_update, self.get_params = [jit(func) for func in opt_func(**optimizer)]
         self._θ: OptimizerState = self.opt_init(self._θ)
+
+        self.rpf = rpf
+        self.ones = onp.ones((self.params['N_lim'], self.params['M_lim']))
 
         self.current_N = 0
         self.current_M = 0
@@ -85,13 +88,27 @@ class GLMJax:
     @profile
     def fit(self, y, s, return_ll=False, indicator=None):
         if return_ll:
-            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator))
+            self._θ, self.iter, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params, self.iter, *self._check_arrays(y, s, indicator))
+            self.iter += 1
+            return ll
         else:
-            Δ = grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator))
+            self._θ, self.iter = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter, *self._check_arrays(y, s, indicator))
+            self.iter += 1
 
-        self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
-        self.iter += 1
-        return ll if return_ll else None
+    @staticmethod
+    @partial(jit, static_argnums=(1, 2, 3))
+    def _fit_ll(θ: Dict, p: Dict, opt_update, get_params, iter, m, n, y, s, indicator):
+        ll, Δ = value_and_grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, indicator)
+        θ = opt_update(iter, Δ, θ)
+        return θ, ll
+
+    @staticmethod
+    @partial(jit, static_argnums=(1, 2, 3, 4))
+    def _fit(θ: Dict, p: Dict, rpf, opt_update, get_params, iter, m, n, y, s, indicator):
+        for i in range(rpf):
+            Δ = grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, indicator)
+            θ = opt_update(iter, Δ, θ)
+        return θ
 
     def grad(self, y, s, indicator=None) -> DeviceArray:
         return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator)).copy()
@@ -124,16 +141,22 @@ class GLMJax:
         if indicator is None:
             indicator = onp.ones(y.shape)
 
-        if y.shape[0] < N_lim:
-            curr_size = y.shape[0]
-            y = onp.vstack((y, onp.zeros((N_lim - curr_size, y.shape[1]))))
-            indicator = onp.vstack((indicator, onp.zeros((N_lim - curr_size, y.shape[1]))))
+        if y.shape != (N_lim, M_lim):
+            y_ = onp.zeros((N_lim, M_lim), dtype=onp.float32)
+            s_ = onp.zeros((self.params['ds'], M_lim), dtype=onp.float32)
+            indicator_ = onp.zeros((N_lim, M_lim), dtype=onp.float32)
 
-        if y.shape[1] < M_lim:
-            curr_size = y.shape[1]
-            y = onp.hstack((y, onp.zeros((N_lim, M_lim - curr_size))))
-            s = onp.hstack((s, onp.zeros((self.params['ds'], M_lim - curr_size))))
-            indicator = onp.hstack((indicator, onp.zeros((N_lim, M_lim - curr_size))))
+            y_[:y.shape[0], :y.shape[1]] = y
+            s_[:s.shape[0], :s.shape[1]] = s
+
+            if indicator is not None:
+                indicator_[:y.shape[0], :y.shape[1]] = indicator
+            else:
+                indicator_[:y.shape[0], :y.shape[1]] = 1.
+
+            y = y_
+            s = s_
+            indicator = indicator_
 
         if y.shape[1] > M_lim:
             raise ValueError('Data are too wide (M exceeds M_lim).')
@@ -210,7 +233,7 @@ class GLMJax:
 
     @property
     def θ(self) -> Dict:
-        return self.get_params(self._θ).copy()
+        return self.get_params(self._θ)
 
     @property
     def weights(self) -> onp.ndarray:
@@ -224,7 +247,7 @@ class GLMJax:
 
 
 class GLMJaxSynthetic(GLMJax):
-    def __init__(self, *args, data=None, offline=False, indicator=None, **kwargs):
+    def __init__(self, *args, data=None, offline=False, **kwargs):
 
         """
         GLMJax with data handling. Data are given to the constructor.
@@ -247,13 +270,11 @@ class GLMJaxSynthetic(GLMJax):
             self.current_M = self.params['M_lim']
             self.current_N = self.params['N_lim']
 
-        self.indicator = indicator if indicator is not None else onp.ones((self.params['N_lim'], self.params['M_lim']))
-
         assert self.y.shape[1] == self.s.shape[1]
         assert self.y.shape[1] >= self.current_M
 
     @profile
-    def fit(self, return_ll=False):
+    def fit(self, return_ll=False, indicator=None):
         if self.offline:
             if self.iter % 10000 == 0:
                 self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
@@ -261,27 +282,41 @@ class GLMJaxSynthetic(GLMJax):
             i = self.rand[self.iter % 10000]
             args = (self.params['M_lim'], self.params['N_lim'],
                     self.y[:, i:i + self.params['M_lim']],
-                    self.s[:, i:i + self.params['M_lim']], self.indicator)
+                    self.s[:, i:i + self.params['M_lim']], self.ones)
 
         else:
             if self.iter < self.params['M_lim']:  # Increasing width.
                 y_step = self.y[:, :self.iter + 1]
                 stim_step = self.s[:, :self.iter + 1]
-                args = self._check_arrays(y_step, stim_step, indicator=self.indicator)
+                args = self._check_arrays(y_step, stim_step, indicator=indicator)
             else:  # Sliding window.
+                if indicator is None:
+                    indicator = self.ones
                 y_step = self.y[:, self.iter - self.params['M_lim']: self.iter]
                 stim_step = self.s[:, self.iter - self.params['M_lim']: self.iter]
-                args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, self.indicator)
+                args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, indicator)
 
         if return_ll:
-            ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)
+            self._θ, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params, self.iter,
+                                                    *args)
+            self.iter += 1
+            return ll
+            # ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator))
         else:
-            Δ = grad(self._ll)(self.θ, self.params, *args)
+            self._θ = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter,
+                                             *args)
+            self.iter += 1
 
-        self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
-        self.iter += 1
-
-        return ll if return_ll else None
+        #
+        # if return_ll:
+        #     ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)
+        # else:
+        #     Δ = grad(self._ll)(self.θ, self.params, *args)
+        #
+        # self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
+        # self.iter += 1
+        #
+        # return ll if return_ll else None
 
 
 if __name__ == '__main__':  # Test

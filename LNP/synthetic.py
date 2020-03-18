@@ -113,7 +113,7 @@ def plot_rp(lambdas, theta):
 
 c = CompareOpt(params, y, s)
 lls = c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
-        save_grad=None, iters_offline=10000, indicator=None, hamming_thr=0.05)
+        save_grad=None, iters_offline=10000, indicator=None, hamming_thr=0.05, rpf=2)
 
 # %% Plot θ
 fig, ax = plt.subplots(figsize=(8, 12), nrows=3, ncols=2, dpi=200)
@@ -130,7 +130,7 @@ def gen_plot(i, data, title):
     g.set_cmap('bwr')
 
 
-opt = 'adam_offline'
+opt = optimizers[0]['name']
 
 gen_plot(0, gnd['w'], 'Ground Truth w')
 gen_plot(1, c.theta[opt][-1]['w'], 'Fitted w')

@@ -42,7 +42,7 @@ class CompareOpt:
 
     @profile
     def run(self, optimizers, theta=None, resume=False, save_grad=None, save_theta=None, use_gpu=False, gnd_data=None,
-            iters_offline=None, checkpoint=100, hamming_thr=0.2, indicator=None):
+            iters_offline=None, checkpoint=100, hamming_thr=0.2, indicator=None, rpf=1):
         """
         optimizers: a list of dict.
         theta: dict of weights.
@@ -72,7 +72,7 @@ class CompareOpt:
             else:
                 opt_ = {k: v for k, v in opt.items() if k != 'offline'}
                 self.model[name] = model = GLMJaxSynthetic(self.params, optimizer=opt_, use_gpu=use_gpu, theta=theta,
-                                                           data=(self.S, self.stim), offline=offline, indicator=indicator)
+                                                           data=(self.S, self.stim), offline=offline, rpf=rpf)
                 self.grad[name] = list()
                 self.theta[name] = list()
                 self.lls[name] = ll = np.zeros(int(iters / checkpoint))
@@ -105,7 +105,7 @@ class CompareOpt:
                         hamming[idx, 0] = np.sum(res == 1)  # FP
                         hamming[idx, 1] = np.sum(res == -1)  # FN
 
-                    ll[idx] = model.fit(return_ll=True)
+                    ll[idx] = model.fit(return_ll=True, indicator=indicator)
 
                     if i > checkpoint and ll[idx] > 1e5:
                         raise Exception(f'Blew up at {i}.')
@@ -114,7 +114,7 @@ class CompareOpt:
                         print(f"{opt['name']}, step: {checkpoint * idx:5.0f}, w_norm: {maes[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
-                    model.fit(return_ll=False)
+                    model.fit(return_ll=False, indicator=indicator)
 
             print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step")
 
