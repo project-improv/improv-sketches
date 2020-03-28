@@ -6,6 +6,7 @@ import seaborn as sns
 from pathlib import Path
 
 from compare_opt import CompareOpt
+from jax.numpy import sqrt
 
 sns.set()
 
@@ -14,45 +15,51 @@ Run GLMJax using synthetic data from `data_gen.py`.
 """
 
 params_raw = pickle.loads(Path('params_dict.pickle').read_bytes())
-window_size = 20000
+window_size = 2000
 params = {
     'N_lim': params_raw['numNeurons'],
     'M_lim': window_size,
     'dh': params_raw['hist_dim'],
-    'dt': 1,  # params_raw['dt'],
+    'dt': params_raw['dt'],
     'ds': 1,
-    'λ1': 0.015,
+    'λ1': 0.4,
     'λ2': 0.02
 }
 
 print('Loading data.')
 gnd = pickle.loads(Path('theta_dict.pickle').read_bytes())
-print('Number of non-zero values in gnd θ_w:', np.sum(np.abs(gnd['w']) > 0))
+gnd_p = np.sum(np.abs(gnd['w']) > 0)
+gnd_n = params['N_lim']**2 - gnd_p
+print('Number of non-zero values in gnd θ_w:', gnd_p)
 
-y = np.loadtxt('data_sample.txt').astype(np.float32)[:, :20000]
+y = np.loadtxt('data_sample.txt').astype(np.float32)[:, :window_size]
 s = np.zeros((params['ds'], y.shape[1]), dtype=np.float32)
-c = CompareOpt(params, y, s)
 
 
 def gen_theta(p):
-    np.random.seed(0)
-    w = 1 / 20 * np.random.random((p['N_lim'], p['N_lim']))
+    np.random.seed(1234)
+    w = 1 / 20 * np.random.random((p['N_lim'], p['N_lim'])) # 1 / 20 * np.random.random((p['N_lim'], p['N_lim']))
     k = np.zeros((p['N_lim'], p['ds']))
-    b = np.random.random((p['N_lim'], 1))
+    b = 1 / 10 * np.random.random((p['N_lim'], 1))
     h = 1 / 20 * np.random.random((p['N_lim'], p['dh']))
     return {'h': h, 'w': w, 'b': b, 'k': k}
-
 
 θ_init = gen_theta(params)
 
 
-def online_decay(step_size, decay_steps, decay_rate):
+def online_sqrt_decay(step_size, decay_steps, decay_rate):
     def schedule(i):
-        return (i < window_size) * i / window_size * step_size \
-               + (i >= window_size) * step_size * decay_rate ** ((i - window_size) / decay_steps)
+        return (i <= window_size) * i / window_size * step_size \
+               + (i > window_size) * step_size / sqrt(((i <= window_size) * window_size*2) + (i - window_size)) # * decay_rate ** ((i - window_size) / decay_steps)
 
     return schedule
 
+def online_exp_decay(step_size, decay_steps, decay_rate):
+    def schedule(i):
+        return (i <= window_size) * i / window_size * step_size \
+               + (i > window_size) * decay_rate ** ((i - window_size) / decay_steps)
+
+    return schedule
 
 def offline_decay(step_size, decay_steps, decay_rate):
     def schedule(i):
@@ -60,13 +67,12 @@ def offline_decay(step_size, decay_steps, decay_rate):
 
     return schedule
 
-
 optimizers = [
-    # {'name': 'adam', 'step_size': online_decay(2e-2, 2e4, 0.1)},
+    #{'name': 'adam', 'step_size': online_decay(2e-3, 2e4, 0.1)},
     {'name': 'adam', 'step_size': offline_decay(5e-3, 1e4, 0.1), 'offline': True},
 ]
 
-indicator = np.ones(y.shape)
+# indicator = np.ones(y.shape)
 # indicator[:, :10000] = 0.
 # y[:, :10000] = 0.
 
@@ -78,7 +84,7 @@ def regularization_path(r: np.ndarray):
         print(f"{p['λ1']= }")
         c = CompareOpt(p, y, s)
         c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
-              save_grad=None, iters_offline=20000, indicator=indicator)
+              save_grad=None, iters_offline=5000, indicator=indicator)
         out[i, :] = c.theta['adam_offline'][-1]['w'].reshape(p['N_lim']**2)
 
         plt.imshow(np.abs(c.theta['adam_offline'][-1]['w']))
@@ -110,41 +116,92 @@ def plot_rp(lambdas, theta):
 #     plot_rp(λs, th)
 
 
+if __name__ == '__main__':
 
-c = CompareOpt(params, y, s)
-lls = c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
-        save_grad=None, iters_offline=10000, indicator=None, hamming_thr=0.05, rpf=2)
+    c = CompareOpt(params, y, s)
+    lls = c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
+            save_grad=None, iters_offline=10000, indicator=None, hamming_thr=0.1, rpf=2)
 
-# %% Plot θ
-fig, ax = plt.subplots(figsize=(8, 12), nrows=3, ncols=2, dpi=200)
-ax = ax.reshape(ax.size)
+    # def roc(λs):
+    #     results = dict()
+    #     for w in [1000, 5000, 10000, 50000, 100000]:
+    #         print(w)
+    #         window_size = w
+    #         y_ = y[:, :w]
+    #         s_ = s[:, :w]
+    #         results[w] = np.zeros((len(λs), 2))
+    #         for i, λ in enumerate(λs):
+    #             params = {
+    #                 'N_lim': params_raw['numNeurons'],
+    #                 'M_lim': window_size,
+    #                 'dh': params_raw['hist_dim'],
+    #                 'dt': params_raw['dt'],
+    #                 'ds': 1,
+    #                 'λ1': λ,
+    #                 'λ2': 0
+    #             }
+    #
+    #             c = CompareOpt(params, y_, s_)
+    #             c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
+    #                         save_grad=None, iters_offline=10000, indicator=None, hamming_thr=0.1, rpf=1)
+    #             results[w][i, :] = c.hamming['adam_offline'][-1]
+    #     return results
+    #
+    # results = roc(np.linspace(0.005, 1, 10))  # return FP/FN
+
+    # Precision = True Positives / (True Positives + False Positives)
+    # Recall = True Positives / (True Positives + False Negatives)
 
 
-def gen_plot(i, data, title):
-    scale = np.max(np.abs(data))
-    g = ax[i].imshow(data, vmin=-scale, vmax=scale)
-    ax[i].grid(0)
-    ax[i].set_title(title)
-    fig.colorbar(g, ax=ax[i])
+    # tp = gnd_p - np.array([r[:, 1] for r in results.values()])
+    # fp = np.array([r[:, 0] for r in results.values()])
+    #
+    # precision = tp / (tp + fp)
+    # recall = tp / (tp + np.array([r[:, 1] for r in results.values()]))
+    #
+    # fig, ax = plt.subplots(dpi=300)
+    # for i, k in enumerate(results.keys()):
+    #     ax.plot(recall[i,:], precision[i,:], label=f'{k} points')
+    # ax.set_xlabel('Recall')
+    # ax.set_ylabel('Precision')
+    # fig.legend(loc=7)
+    # ax.set_xlim(0,1)
+    # ax.set_ylim(0,1)
+    # ax.set_title('Offline, 50 neurons, 0.1 hamming threshold, 118 non-zero')
+    # plt.savefig('precision_recall.png')
+    # plt.show()
 
-    g.set_cmap('bwr')
+
+    # %% Plot θ
+    fig, ax = plt.subplots(figsize=(8, 12), nrows=3, ncols=2, dpi=200)
+    ax = ax.reshape(ax.size)
 
 
-opt = optimizers[0]['name']
+    def gen_plot(i, data, title):
+        scale = np.max(np.abs(data))
+        g = ax[i].imshow(data, vmin=-scale, vmax=scale)
+        ax[i].grid(0)
+        ax[i].set_title(title)
+        fig.colorbar(g, ax=ax[i])
 
-gen_plot(0, gnd['w'], 'Ground Truth w')
-gen_plot(1, c.theta[opt][-1]['w'], 'Fitted w')
+        g.set_cmap('bwr')
 
-gen_plot(2, gnd['h'], 'Ground Truth h')
-gen_plot(3, c.theta[opt][-1]['h'][:, ::-1], 'Fitted h')
 
-gen_plot(4, gnd['b'][:, np.newaxis], 'Ground Truth b')
-gen_plot(5, c.theta[opt][-1]['b'], 'Fitted b')
-ax[4].get_xaxis().set_visible(False)
-ax[5].get_xaxis().set_visible(False)
+    opt = f"{optimizers[0]['name']}_offline" if optimizers[0]['offline'] else optimizers[0]['name']
 
-plt.tight_layout()
-plt.show()
+    gen_plot(0, gnd['w'], 'Ground Truth w')
+    gen_plot(1, c.theta[opt][-1]['w'], 'Fitted w')
+
+    gen_plot(2, gnd['h'], 'Ground Truth h')
+    gen_plot(3, c.theta[opt][-1]['h'][:, ::-1], 'Fitted h')
+
+    gen_plot(4, gnd['b'][:, np.newaxis], 'Ground Truth b')
+    gen_plot(5, c.theta[opt][-1]['b'], 'Fitted b')
+    ax[4].get_xaxis().set_visible(False)
+    ax[5].get_xaxis().set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
 
 # %% Animation of Weights
 

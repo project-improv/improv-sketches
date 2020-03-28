@@ -42,7 +42,7 @@ class CompareOpt:
 
     @profile
     def run(self, optimizers, theta=None, resume=False, save_grad=None, save_theta=None, use_gpu=False, gnd_data=None,
-            iters_offline=None, checkpoint=100, hamming_thr=0.2, indicator=None, rpf=1):
+            iters_offline=None, checkpoint=100, hamming_thr=0.2, indicator=None, rpf=1, verbose=True):
         """
         optimizers: a list of dict.
         theta: dict of weights.
@@ -58,7 +58,7 @@ class CompareOpt:
 
         for opt in optimizers:
             offline = opt.get('offline', False)
-            print('Offline:', offline)
+
             iters = self.total_M if not offline else iters_offline
             name = opt['name'] if not offline else f"{opt['name']}_offline"
 
@@ -82,7 +82,9 @@ class CompareOpt:
             if gnd_data:
                 gnd_for_hamming = np.abs(gnd_data['w']) > hamming_thr * np.max(np.abs(gnd_data['w'])).astype(np.int)
 
-            print('Total iterations: ', iters)
+            if verbose:
+                print('Offline:', offline)
+                print('Total iterations: ', iters)
 
             for i in range(iters):
                 if i == 1:  # Avoid JIT
@@ -110,13 +112,14 @@ class CompareOpt:
                     if i > checkpoint and ll[idx] > 1e5:
                         raise Exception(f'Blew up at {i}.')
 
-                    if i % (checkpoint * 10) == 0:
+                    if i % (checkpoint * 10) == 0 and verbose:
                         print(f"{opt['name']}, step: {checkpoint * idx:5.0f}, w_norm: {maes[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
                     model.fit(return_ll=False, indicator=indicator)
 
-            print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step")
+            if verbose:
+                print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step")
 
         return self.lls
 
