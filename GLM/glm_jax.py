@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 
+from functools import partial
 from importlib import import_module
+from typing import Dict, Tuple
 
 import jax.numpy as np
 import numpy as onp
-from functools import partial
 from jax import devices, jit, random, grad, value_and_grad
 from jax.config import config
 from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
-from typing import Dict, Tuple
 
 try:  # kernprof
     profile
@@ -69,7 +69,6 @@ class GLMJax:
         # Optimizer
         if optimizer is None:
             raise ValueError('Optimizer not named.')
-        print(f'Optimizer: {optimizer}')
         opt_func = getattr(import_module('jax.experimental.optimizers'), optimizer['name'])
         optimizer = {k: v for k, v in optimizer.items() if k != 'name'}
         self.opt_init, self.opt_update, self.get_params = [jit(func) for func in opt_func(**optimizer)]
@@ -88,11 +87,13 @@ class GLMJax:
     @profile
     def fit(self, y, s, return_ll=False, indicator=None):
         if return_ll:
-            self._θ, self.iter, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params, self.iter, *self._check_arrays(y, s, indicator))
+            self._θ, self.iter, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params,
+                                                    self.iter, *self._check_arrays(y, s, indicator))
             self.iter += 1
             return ll
         else:
-            self._θ, self.iter = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter, *self._check_arrays(y, s, indicator))
+            self._θ, self.iter = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
+                                             self.iter, *self._check_arrays(y, s, indicator))
             self.iter += 1
 
     @staticmethod
@@ -110,7 +111,7 @@ class GLMJax:
             θ = opt_update(iter, Δ, θ)
         return θ
 
-    def grad(self, y, s, indicator=None) -> DeviceArray:
+    def get_grad(self, y, s, indicator=None) -> DeviceArray:
         return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator)).copy()
 
     def predict(self, y, s, indicator=None):
@@ -121,9 +122,9 @@ class GLMJax:
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
         """
-        Check validity of input arrays and pad to N_lim and M_lim.
-        :return padded arrays
-
+        Check validity of input arrays and pad y and s to (N_lim, M_lim) and (ds, M_lim), respectively.
+        Indicator matrix discerns true zeros from padded ones.
+        :return current_M, current_N, y, s, indicator
         """
         assert y.shape[1] == s.shape[1]
         assert s.shape[0] == self.params['ds']
@@ -137,7 +138,6 @@ class GLMJax:
             self._increase_θ_size()
             N_lim = self.params['N_lim']
 
-        # Matrix to indicate whether entry (i,j) is real data or zero-padding.
         if indicator is None:
             indicator = onp.ones(y.shape)
 
@@ -154,14 +154,10 @@ class GLMJax:
             else:
                 indicator_[:y.shape[0], :y.shape[1]] = 1.
 
-            y = y_
-            s = s_
-            indicator = indicator_
-
         if y.shape[1] > M_lim:
             raise ValueError('Data are too wide (M exceeds M_lim).')
 
-        return self.current_M, self.current_N, y, s, indicator
+        return self.current_M, self.current_N, y_, s_, indicator_
 
     def _increase_θ_size(self) -> None:
         """
@@ -191,7 +187,7 @@ class GLMJax:
     @partial(jit, static_argnums=(1,))
     def _predict(θ: Dict, p: Dict, y, s) -> DeviceArray:
         """
-        Return log rates from the model.
+        Return log rates from the model. That is, the linear part of the model.
         """
         cal_stim = θ["k"] @ s
         cal_hist = GLMJax._convolve(p, y, θ["h"])
@@ -201,13 +197,12 @@ class GLMJax:
 
         return θ["b"] + (cal_stim + cal_weight + cal_hist) + np.log(p['dt'])
 
-
     @staticmethod
     @partial(jit, static_argnums=(1,))
     def _ll(θ: Dict, p: Dict, m, n, y, s, indicator) -> DeviceArray:
         """
-        Log-likelihood of a Poisson GLM.
-
+        Return negative log-likelihood of data given model.
+        ℓ1 and ℓ2 regularizations are specified in params.
         """
         log_r̂ = GLMJax._predict(θ, p, y, s)
 
@@ -223,7 +218,7 @@ class GLMJax:
     @partial(jit, static_argnums=(0,))
     def _convolve(p: Dict, y, θ_h) -> DeviceArray:
         """
-        Sliding window convolution for θ['h'].
+        Sliding window convolution for history terms.
         """
         cvd = np.zeros((y.shape[0], y.shape[1] - p['dh']))
         for i in np.arange(p['dh']):
@@ -250,13 +245,13 @@ class GLMJaxSynthetic(GLMJax):
     def __init__(self, *args, data=None, offline=False, **kwargs):
 
         """
-        GLMJax with data handling. Data are given to the constructor.
+        GLMJax with data handling. Data are given beforehand to the constructor.
 
         If offline:
             If M_lim == y.shape[1]: The entire (y, s) is passed into the fit function.
             If M_lim > y.shape[1]: A random slice of width M_lim is used. See `self.rand`.
 
-        If not online:
+        If not offline:
             Data of width `self.iter` are used until `self.iter` > M_lim.
             Then, a sliding window of width M_lim is used instead.
         """
@@ -297,31 +292,16 @@ class GLMJaxSynthetic(GLMJax):
                 args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, indicator)
 
         if return_ll:
-            self._θ, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params, self.iter,
-                                                    *args)
+            self._θ, ll = self._fit_ll(self._θ, self.params, self.opt_update, self.get_params, self.iter, *args)
             self.iter += 1
             return ll
-            # ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator))
         else:
-            self._θ = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter,
-                                             *args)
+            self._θ = self._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter, *args)
             self.iter += 1
-
-        #
-        # if return_ll:
-        #     ll, Δ = value_and_grad(self._ll)(self.θ, self.params, *args)
-        # else:
-        #     Δ = grad(self._ll)(self.θ, self.params, *args)
-        #
-        # self._θ: OptimizerState = jit(self.opt_update)(self.iter, Δ, self._θ)
-        # self.iter += 1
-        #
-        # return ll if return_ll else None
 
 
 if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
-    from glm_py import GLMPy
 
     N = 2
     M = 100
@@ -341,17 +321,3 @@ if __name__ == '__main__':  # Test
     data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
     stim = onp.random.randn(ds, 2)
     print(model.ll(data, stim))
-
-
-    def gen_ref():
-        ow = onp.asarray(w)[:sN, :sN]
-        oh = onp.asarray(h)[:sN, ...]
-        ok = onp.asarray(k)[:sN, ...]
-        ob = onp.asarray(b)[:sN, ...]
-
-        p = {'numNeurons': sN, 'hist_dim': dh, 'numSamples': M, 'dt': 0.1, 'stim_dim': ds}
-        return GLMPy(onp.concatenate((ow, oh, ob, ok), axis=None).flatten(), p)
-
-
-    old = gen_ref()
-    print(old.ll(data, stim))
