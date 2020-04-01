@@ -117,10 +117,9 @@ class CompareOpt:
                     if gnd_data:
                         for j, name_θ in enumerate(self.names_θ):
                             mse[idx, j] = mean_squared_error(model.θ[name_θ], gnd_data[name_θ])
-                        binarized = (np.abs(model.θ['w']) > hamming_thr * np.max(np.abs(model.θ['w']))).astype(np.int)
-                        res = binarized - gnd_for_hamming
-                        hamming[idx, 0] = np.sum(res == 1)  # FP
-                        hamming[idx, 1] = np.sum(res == -1)  # FN
+                        ham = calc_hamming(gnd_data['w'], model.θ['w'], thr=hamming_thr)
+                        hamming[idx, 0] = np.sum(ham == 1)  # FP
+                        hamming[idx, 1] = np.sum(ham == -1)  # FN
 
                     ll[idx] = model.fit(return_ll=True, indicator=indicator)
 

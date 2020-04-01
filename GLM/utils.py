@@ -28,3 +28,8 @@ def offline_decay(step_size, decay_steps, decay_rate):
     def schedule(i):
         return step_size * decay_rate ** (i / decay_steps)
     return schedule
+
+def calc_hamming(gnd, θ, thr=0.1):
+    gnd_for_hamming = np.abs(gnd) > thr * np.max(np.abs(gnd)).astype(np.int)
+    binarized = (np.abs(θ) > thr * np.max(np.abs(θ))).astype(np.int)
+    return binarized - gnd_for_hamming  # FP == 1, FN == -1
