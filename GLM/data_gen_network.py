@@ -11,13 +11,13 @@ sns.set()
 
 
 class DataGenerator:
-    def __init__(self, params, params_θ, theta=None):
+    def __init__(self, params, params_θ=None, theta=None):
         self.params = params
         self.theta = theta
         if self.theta is None:
             self.theta = self.gen_theta(**params_θ)
 
-    def gen_theta(self, seed=2, p_inh=0.5, base=0, connectedness=3, p_rand=0.):
+    def gen_theta(self, seed=2, p_inh=0.5, base=0, connectedness=3, p_rand=0., rand_w=False, max_w=0.05):
         '''
         Generates model parameters.
         Returns a theta dictionary:
@@ -45,7 +45,7 @@ class DataGenerator:
         # theta['b'][5] = 1.
 
         # coupling filters
-        theta['w'] = 0.1 + 0 * np.random.random(size=(N, N))  # * 0.2
+        theta['w'] =  max_w * np.random.random(size=(N, N)) if rand_w else max_w * np.ones((N,N))
         G = nx.connected_watts_strogatz_graph(N, connectedness, p_rand)
 
         theta['w'] *= nx.adjacency_matrix(G).todense()
