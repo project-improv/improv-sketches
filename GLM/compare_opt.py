@@ -57,7 +57,7 @@ class CompareOpt:
 
     @profile
     def run(self, optimizers, theta=None, resume=False, save_grad=None, save_theta=None, use_gpu=False, gnd_data=None,
-            iters_offline=None, hamming_thr=0.2, indicator=None, rpf=1, verbose=True):
+            iters_offline=None, hamming_thr=0.2, indicator=None, rpf=1, verbose=0):
         """
         optimizers: a list of dict.
         theta: dict of weights.
@@ -67,7 +67,6 @@ class CompareOpt:
         use_gpu: use GPU
         gnd_data: (y, s) ground truth
         iters_offline: if offline, number of repeats
-        checkpoint: save LL, MAE, hamming every _ steps
         hamming_thr: threshold for hamming distance (proportion of max abs).
         """
 
@@ -105,13 +104,13 @@ class CompareOpt:
                 if i == 1:  # Avoid JIT
                     t0 = time.time()
 
-                if save_grad and (i == 1 or i % save_grad == 0):
+                if save_grad and (i == 1 or i % save_grad == 0 or i == iters - 1):
                     self.grad[name].append(model.get_grad(y, s))
 
-                if save_theta and (i == 1 or i % save_theta == 0):
+                if save_theta and (i == 1 or i % save_theta == 0 or i == iters - 1):
                     self.theta[name].append(model.θ)
 
-                if i % self.checkpoint == 0:
+                if i % self.checkpoint == 0 or i == iters - 1:
                     idx = int(model.iter / self.checkpoint)
 
                     if gnd_data:
@@ -126,14 +125,14 @@ class CompareOpt:
                     if i > self.checkpoint and ll[idx] > 1e5:
                         raise Exception(f'Blew up at {i}.')
 
-                    if i % (self.checkpoint * 10) == 0 and verbose:
-                        print(f"{opt['name']}, step: {self.checkpoint * idx:5.0f}, w_norm: {mse[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
+                    if verbose and (i % verbose == 0 or i == iters - 1):
+                        print(f"{opt['name']}, step: {i:5.0f}, w_norm: {mse[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
                     model.fit(return_ll=False, indicator=indicator)  # Don't calculate LL. ~2x faster.
 
             if verbose:
-                print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step")
+                print(f"{opt['name']}: {1e3 * (time.time() - t0) / iters:.03f} ms/step, rpf={rpf}")
 
             self.optimizers = optimizers.copy()
 
