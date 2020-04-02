@@ -209,8 +209,8 @@ class GLMJax:
         r̂ = np.exp(log_r̂)
         r̂ *= indicator
 
-        l1 = p['λ1'] * np.mean(np.abs(θ["w"])) / n
-        l2 = p['λ2'] * np.mean(θ["w"] ** 2) / (2 * n)
+        l1 = p['λ1'] * np.sum(np.abs(θ["w"])) / (np.sqrt(m) * n**2)
+        l2 = p['λ2'] * np.sum(θ["w"] ** 2) / (2 * np.sqrt(m) * n**2)
 
         return (np.sum(r̂) - np.sum(y * log_r̂)) / (m * n ** 2) + l1 + l2
 
