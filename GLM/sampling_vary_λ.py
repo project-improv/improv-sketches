@@ -88,7 +88,7 @@ def run_params_θ(p1, sp1, p2, sp2, params_θ, rep=4, varyθ=False):
             pickle.dump((out[u], th), f)
     return out, th
 
-def run_params(p1, sp1, p2, sp2, params, params_θ, sample_theta_gnd=False, save=True, **vary_kwargs):
+def run_params(p1, sp1, p2, sp2, params, params_θ, sample_theta_gnd=False, save=True, rep=8, **vary_kwargs):
     """ p2 must be in params. """
 
     θ_fitted_dict = dict()
@@ -113,11 +113,11 @@ def run_params(p1, sp1, p2, sp2, params, params_θ, sample_theta_gnd=False, save
 
         gen = DataGenerator(params=p, params_θ=pθ)  # Generate theta
         if sample_theta_gnd:
-            θ_gnd = [gen.gen_new_theta() for _ in range(len(sp2))]
+            θ_gnd = [gen.gen_new_theta() for _ in range(rep)]
         else:
             θ_gnd = gen.theta
 
-        θ_fitted_dict[u] = vary(p2, sp2, p, θ_gnd, **vary_kwargs)
+        θ_fitted_dict[u] = vary(p2, sp2, p, θ_gnd, rep=rep, **vary_kwargs)
         θ_gnd_dict[u] = θ_gnd
 
         if save:
@@ -295,7 +295,7 @@ if __name__ == '__main__':
     λ_sp = np.linspace(1, 4, 15)
     out, th = run_params('base', b_sp, 'λ1', λ_sp, params_base, params_θ, sample_theta_gnd=True, rep=5)
 
-    gen_hamming_plot(out, b_sp, th, xlabel='λ')
+    gen_hamming_plot(out, th, b_sp, xlabel='λ')
 
     plt.suptitle('L1 Regularization vs θb. Vary θb. M=5000. N=40. 5 connections/neuron.')
     plt.legend()

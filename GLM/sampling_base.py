@@ -26,7 +26,7 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
 
     sample_θ_gnd = False
     if isinstance(gnd, list):
-        assert len(gnd) == len(space)
+        assert len(gnd) == rep
         sample_θ_gnd = True
 
     def sample(p):
@@ -35,18 +35,18 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
         s = np.zeros((p['ds'], p['M']), dtype=np.float32)  # Zero for now.
         # n_spikes = np.zeros((rep, p['N_lim']))
 
-        for i in range(rep):
-            print(f'Repeat {i + 1}/{rep}.')
-            gen = DataGenerator(params, theta=gnd[i]) if sample_θ_gnd else DataGenerator(params, theta=gnd)
+        for j in range(rep):
+            print(f'Repeat {j + 1}/{rep}.')
+            gen = DataGenerator(params, theta=gnd[j]) if sample_θ_gnd else DataGenerator(params, theta=gnd)
 
-            r, y = gen.gen_spikes(params=p, seed=10 * i)
+            r, y = gen.gen_spikes(params=p, seed=10 * j)
             if not np.isfinite(np.mean(r)):
                 raise Exception('Generator blew up.')
             c = CompareOpt(p, y, s)
             c.run(opt, theta=gen_rand_theta(p), gnd_data=gen.theta, use_gpu=True, save_theta=500,
                   iters_offline=iters, hamming_thr=0.1, verbose=100, rpf=rpf)
             for name, arr in c.theta[f"{opt[0]['name']}_offline"][-1].items():
-                θ[name][i, ...] = arr
+                θ[name][j, ...] = arr
             # n_spikes[i, :] = np.sum(y, axis=1)
         return θ
 
@@ -112,7 +112,7 @@ def gen_sparse_params_θ(N, p=0.05):
     }
 
 
-def plot_hamming(ax, func, from_run, sp, thetas_gnd, norm=False):
+def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
     trim = 0
     assert len(thetas_gnd) == len(sp)
 
@@ -125,7 +125,7 @@ def plot_hamming(ax, func, from_run, sp, thetas_gnd, norm=False):
             sample_θ = True if isinstance(thetas_gnd[u], list) else False
 
             if sample_θ:
-                results = [func((thetas_gnd[u][j]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]
+                results = [func((thetas_gnd[u][j]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]  # rep
             else:
                 results = [func((thetas_gnd[u]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]
 
