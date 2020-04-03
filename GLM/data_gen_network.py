@@ -12,12 +12,22 @@ sns.set()
 
 class DataGenerator:
     def __init__(self, params, params_θ=None, theta=None):
-        self.params = params
+        self.params = params.copy()
+        self.params_θ = None if params_θ is None else params_θ.copy()
         self.theta = theta
         if self.theta is None:
-            self.theta = self.gen_theta(**params_θ)
+            self.theta = self._gen_theta(**self.params_θ)
+        self.i = 0
 
-    def gen_theta(self, seed=2, p_inh=0.5, base=0, connectedness=3, p_rand=0., rand_w=False, max_w=0.05):
+    def gen_new_theta(self):
+        if 'seed' not in self.params_θ:
+            self.params_θ['seed'] = 1
+        else:
+            self.params_θ['seed'] += 1
+
+        return self._gen_theta(**self.params_θ)
+
+    def _gen_theta(self, seed=0, p_inh=0.5, base=0, connectedness=3, p_rand=0., rand_w=False, max_w=0.05):
         '''
         Generates model parameters.
         Returns a theta dictionary:

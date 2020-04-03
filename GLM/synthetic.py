@@ -1,12 +1,11 @@
 import pickle
 
 import matplotlib.pyplot as plt
-import numpy as np
 import seaborn as sns
 from pathlib import Path
 
 from compare_opt import CompareOpt
-from jax.numpy import sqrt
+from GLM.utils import *
 
 sns.set()
 
@@ -36,36 +35,7 @@ y = np.loadtxt('data_sample.txt').astype(np.float32)[:, :window_size]
 s = np.zeros((params['ds'], y.shape[1]), dtype=np.float32)
 
 
-def gen_theta(p):
-    np.random.seed(1234)
-    w = 1 / 20 * np.random.random((p['N_lim'], p['N_lim'])) # 1 / 20 * np.random.random((p['N_lim'], p['N_lim']))
-    k = np.zeros((p['N_lim'], p['ds']))
-    b = 1 / 10 * np.random.random((p['N_lim'], 1))
-    h = 1 / 20 * np.random.random((p['N_lim'], p['dh']))
-    return {'h': h, 'w': w, 'b': b, 'k': k}
-
-θ_init = gen_theta(params)
-
-
-def online_sqrt_decay(step_size, decay_steps, decay_rate):
-    def schedule(i):
-        return (i <= window_size) * i / window_size * step_size \
-               + (i > window_size) * step_size / sqrt(((i <= window_size) * window_size*2) + (i - window_size)) # * decay_rate ** ((i - window_size) / decay_steps)
-
-    return schedule
-
-def online_exp_decay(step_size, decay_steps, decay_rate):
-    def schedule(i):
-        return (i <= window_size) * i / window_size * step_size \
-               + (i > window_size) * decay_rate ** ((i - window_size) / decay_steps)
-
-    return schedule
-
-def offline_decay(step_size, decay_steps, decay_rate):
-    def schedule(i):
-        return step_size * decay_rate ** (i / decay_steps)
-
-    return schedule
+θ_init = gen_rand_theta(params)
 
 optimizers = [
     #{'name': 'adam', 'step_size': online_decay(2e-3, 2e4, 0.1)},
@@ -83,7 +53,7 @@ def regularization_path(r: np.ndarray):
         p['λ1'] = v
         print(f"{p['λ1']= }")
         c = CompareOpt(p, y, s)
-        c.run(optimizers, theta=gen_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
+        c.run(optimizers, theta=gen_rand_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
               save_grad=None, iters_offline=5000, indicator=indicator)
         out[i, :] = c.theta['adam_offline'][-1]['w'].reshape(p['N_lim']**2)
 
@@ -108,6 +78,8 @@ def plot_rp(lambdas, theta):
     plt.savefig('regularization_path.png')
 
     plt.show()
+
+
 
 
 # if __name__ == '__main__':

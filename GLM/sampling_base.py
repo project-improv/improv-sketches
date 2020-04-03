@@ -14,7 +14,7 @@ Generate multiple samples of data, fit model, and save θ.
 sns.set()
 
 
-def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=1, iters=5000):
+def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
     """
     Fit the model with parameter `to_vary` being varied in `space` to obtain a sampling distribution of fitted θ.
     :return: A dict with {param_value: 3D-array} of θ_w.
@@ -24,20 +24,26 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=1, iters=5000):
         opt = [{'name': 'nesterov', 'step_size': offline_decay(10, 1e3, 0.1), 'mass': 0.99, 'offline': True}]
     assert len(opt) == 1
 
+    sample_θ_gnd = False
+    if isinstance(gnd, list):
+        assert len(gnd) == len(space)
+        sample_θ_gnd = True
+
     def sample(p):
         """ Sample data and fit model. """
-        θ = {name: np.zeros((rep, *arr.shape)) for name, arr in gen_rand_theta(params).items()}
+        θ = {name: np.zeros((rep, *arr.shape)) for name, arr in gen_rand_theta(p).items()}
         s = np.zeros((p['ds'], p['M']), dtype=np.float32)  # Zero for now.
         # n_spikes = np.zeros((rep, p['N_lim']))
-        gen = DataGenerator(params, theta=gnd)
 
         for i in range(rep):
             print(f'Repeat {i + 1}/{rep}.')
+            gen = DataGenerator(params, theta=gnd[i]) if sample_θ_gnd else DataGenerator(params, theta=gnd)
+
             r, y = gen.gen_spikes(params=p, seed=10 * i)
             if not np.isfinite(np.mean(r)):
                 raise Exception('Generator blew up.')
             c = CompareOpt(p, y, s)
-            c.run(opt, theta=gen_rand_theta(params), gnd_data=gnd, use_gpu=True, save_theta=500,
+            c.run(opt, theta=gen_rand_theta(p), gnd_data=gen.theta, use_gpu=True, save_theta=500,
                   iters_offline=iters, hamming_thr=0.1, verbose=100, rpf=rpf)
             for name, arr in c.theta[f"{opt[0]['name']}_offline"][-1].items():
                 θ[name][i, ...] = arr
@@ -106,23 +112,24 @@ def gen_sparse_params_θ(N, p=0.05):
     }
 
 
-def plot_hamming(ax, func, from_run, sp, varyN=False, norm=False):
+def plot_hamming(ax, func, from_run, sp, thetas_gnd, norm=False):
     trim = 0
+    assert len(thetas_gnd) == len(sp)
+
     for i, u in enumerate(sp):
         x = []
         y = []
         ci = []
 
-        if varyN:
-            p = params_base.copy()
-            p['N'] = p['N_lim'] = u
-            gen = DataGenerator(p, gen_sparse_params_θ(u))
-        else:
-            gen = DataGenerator(params_base, gen_sparse_params_θ(params_base['N']))
+        for j, (λ, θs) in enumerate(from_run[u].items()):
+            sample_θ = True if isinstance(thetas_gnd[u], list) else False
 
-        for λ, θs in from_run[u].items():
+            if sample_θ:
+                results = [func((thetas_gnd[u][j]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]
+            else:
+                results = [func((thetas_gnd[u]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]
+
             x.append(λ)
-            results = [func((gen.theta['w'], θs['w'][i, ...])) for i in range(len(θs['w']))]
             y.append(np.mean(results))
             ci.append(1.96 * np.sqrt(np.var(results)))
 
@@ -139,7 +146,7 @@ def plot_hamming(ax, func, from_run, sp, varyN=False, norm=False):
         ax.plot(x[idx_min], y[idx_min], f'*C{i}')
         ax.fill_between(x, y - ci, y + ci, alpha=0.3)
 
-def gen_plot(*args, xlabel=None, **kwargs):
+def gen_hamming_plot(*args, xlabel=None, **kwargs):
     fig, axs = plt.subplots(ncols=3, figsize=(12, 4), dpi=300)
     axs.flatten()
     funcs = [
@@ -191,7 +198,7 @@ if __name__ == '__main__':
         with open(f'N{p["N"]}M.pk', 'wb') as f:
             pickle.dump(out[N], f)
 #%%
-    gen_plot(out, N_sp, varyN=True, xlabel='M', norm=True)
+    gen_hamming_plot(out, N_sp, params_base, varyN=True, xlabel='M', norm=True)
     plt.suptitle('FP/FN vs Data Length. Normalized to N^2. Vary N. λ=2.4, 5% sparsity.')
     plt.legend()
     plt.tight_layout()
