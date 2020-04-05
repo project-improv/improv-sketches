@@ -60,6 +60,44 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
         out[s] = sample(p_)
     return out
 
+def run_params(p1, sp1, p2, sp2, params, params_θ, sample_theta_gnd=False, save=True, rep=8, **vary_kwargs):
+    """ p2 must be in params. """
+
+    θ_fitted_dict = dict()
+    θ_gnd_dict = dict()
+
+    if p1 in params:
+        vary_p = True
+    elif p1 in params_θ:
+        vary_p = False
+    else:
+        raise ValueError('Unknown parameter to vary!')
+
+    for u in reversed(sp1):  # Start with largest to detect any failure.
+        print(f'{u=}')
+        p = params.copy()
+        pθ = params_θ.copy()
+
+        if vary_p:
+            p[p1] = u
+        else:
+            pθ[p1] = u
+
+        gen = DataGenerator(params=p, params_θ=pθ)  # Generate theta
+        if sample_theta_gnd:
+            θ_gnd = [gen.gen_new_theta() for _ in range(rep)]
+        else:
+            θ_gnd = gen.theta
+
+        θ_fitted_dict[u] = vary(p2, sp2, p, θ_gnd, rep=rep, **vary_kwargs)
+        θ_gnd_dict[u] = θ_gnd
+
+        if save:
+            with open(f'{p1}{u}{p2}.pk', 'wb') as f:
+                pickle.dump((θ_fitted_dict[u], θ_gnd_dict), f)
+
+    return θ_fitted_dict, θ_gnd_dict
+
 
 def plot_bias_var(θs, gnd, name='w'):
     sd = np.sqrt(np.var(θs[name], axis=0))
@@ -100,16 +138,6 @@ def calc_median_cv(th):
     # mask = np.abs(np.mean(th, axis=0)) > 0.1 * np.max(th)
     return np.mean((sd / mean))
 
-def gen_sparse_params_θ(N, p=0.05):
-    return {
-        'seed': 0,
-        'p_inh': 0.6,
-        'p_rand': 0.,
-        'base': 0.,
-        'connectedness': int(p * N) + 1,
-        'rand_w': False,
-        'max_w': 0.05
-    }
 
 
 def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
@@ -125,7 +153,7 @@ def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
             sample_θ = True if isinstance(thetas_gnd[u], list) else False
 
             if sample_θ:
-                results = [func((thetas_gnd[u][j]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]  # rep
+                results = [func((thetas_gnd[u][k]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]  # rep
             else:
                 results = [func((thetas_gnd[u]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]
 
@@ -164,6 +192,16 @@ def gen_hamming_plot(*args, xlabel=None, **kwargs):
     axs[1].set_ylabel('FN')
     axs[2].set_ylabel('FP+FN')
     return fig, axs
+
+
+def gen_hamming_wrapper(*args, title=None, save_name=None, **kwargs):
+    gen_hamming_plot(*args, **kwargs)
+    if title is not None:
+        plt.suptitle(title)
+    plt.legend()
+    if save_name is not None:
+        plt.savefig(save_name)
+    plt.show()
 
 
 if __name__ == '__main__':
