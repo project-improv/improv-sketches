@@ -6,7 +6,7 @@ import seaborn as sns
 
 from GLM.utils import *
 from data_gen_network import DataGenerator
-from sampling_base import vary, gen_hamming_wrapper, run_params
+from sampling_base import vary, gen_hamming_figure, run_params
 
 sns.set()
 
@@ -59,37 +59,32 @@ if __name__ == '__main__':
     λ_sp = np.linspace(1, 4, 15)
 
     def run_and_plot(name, sp, params_base, params_θ):
-        θ_fitted, θ_gnd = run_params(name, sp, 'λ1', λ_sp, params_base, params_θ, sample_theta_gnd=True, rep=5)
-        gen_hamming_wrapper(θ_fitted, θ_gnd, sp, xlabel='λ', save_name=f'λ_vary{name}.png',
-                            title=f"L1 Regularization. Vary {name}.")
+        θ_fitted, θ_gnd = run_params(name, sp, 'λ1', λ_sp, params_base, params_θ, rep=5)
+        gen_hamming_figure(θ_fitted, θ_gnd, sp, xlabel='λ', save_name=f'λ_vary{name}.png',
+                           title=f"L1 Regularization. Vary {name}.")
 
     #%% Vary M
-    M_sp = [1000, 2000, 5000, 10000, 20000]
-    run_and_plot('M', M_sp, params_base, params_θ)
+    run_and_plot('M', [1000, 2000, 5000, 10000, 20000], params_base, params_θ)
 
 
-    # # %% Vary N
-    # N_sp = [40, 80, 160]
-    # params = params_base.copy()
-    # params['M_lim'] = params['M'] = 10000
-    # # TODO
-    # run_and_plot('N', N_sp, params, params_θ)
+    # %% Vary N
+    params = params_base.copy()
+    params['M_lim'] = params['M'] = 10000
+    run_and_plot('N', [40, 80, 160], params, params_θ)
 
 
     #%% Vary sparsity
     params = params_base.copy()
     params['M_lim'] = params['M'] = 20000
     params['N_lim'] = params['N'] = 160
-    connectedness_sp = list(range(3, 13, 3))
-    run_and_plot('connectedness', connectedness_sp, params, params_θ)
+    run_and_plot('connectedness', list(range(3, 13, 3)), params, params_θ)
 
 
     #%% Vary randomness
     params = params_base.copy()
     params['M_lim'] = params['M'] = 10000
     params['N_lim'] = params['N'] = 80
-    r_sp = [0.01, 0.05, 0.1, 0.2]
-    run_and_plot('p_rand', r_sp, params, params_θ)
+    run_and_plot('p_rand', [0.01, 0.05, 0.1, 0.2], params, params_θ)
 
 
     #%% Vary max weight

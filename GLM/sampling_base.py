@@ -13,8 +13,16 @@ Generate multiple samples of data, fit model, and save θ.
 
 sns.set()
 
+def gen_sparse_params_θ(params_θ, N, p=0.05):
+    if int(p * N) + 1 != p * N + 1:
+        raise ValueError('Number of connections per neuron not integer.')
 
-def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
+    p = params_θ.copy()
+    p['connectedness'] = int(p * N) + 1
+    return p
+
+
+def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, sample_theta=True):
     """
     Fit the model with parameter `to_vary` being varied in `space` to obtain a sampling distribution of fitted θ.
     :return: A dict with {param_value: 3D-array} of θ_w.
@@ -24,12 +32,12 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
         opt = [{'name': 'nesterov', 'step_size': offline_decay(10, 1e3, 0.1), 'mass': 0.99, 'offline': True}]
     assert len(opt) == 1
 
-    sample_θ_gnd = False
-    if isinstance(gnd, list):
-        assert len(gnd) == rep
-        sample_θ_gnd = True
+    # sample_θ_gnd = False
+    # if isinstance(gnd, list):
+    #     assert len(gnd) == rep
+    #     sample_θ_gnd = True
 
-    def sample(p):
+    def sample(p, gnd):
         """ Sample data and fit model. """
         θ = {name: np.zeros((rep, *arr.shape)) for name, arr in gen_rand_theta(p).items()}
         s = np.zeros((p['ds'], p['M']), dtype=np.float32)  # Zero for now.
@@ -37,7 +45,7 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
 
         for j in range(rep):
             print(f'Repeat {j + 1}/{rep}.')
-            gen = DataGenerator(params, theta=gnd[j]) if sample_θ_gnd else DataGenerator(params, theta=gnd)
+            gen = DataGenerator(params, theta=gnd[j])
 
             r, y = gen.gen_spikes(params=p, seed=10 * j)
             if not np.isfinite(np.mean(r)):
@@ -50,47 +58,46 @@ def vary(to_vary, space, params, gnd, rep=8, opt=None, rpf=10, iters=500):
             # n_spikes[i, :] = np.sum(y, axis=1)
         return θ
 
-    out = dict()
+    θ_gnd = dict()
+    θ_fitted = dict()
+
     for i, s in enumerate(reversed(space)):
         print(f'{to_vary}={s}')
         p_ = params.copy()
-        p_[to_vary] = s
+        pθ_ = params_θ.copy()
+
+        if to_vary not in p_ and to_vary not in pθ_:
+            raise ValueError('Unknown params to vary!')
+        p_[to_vary] = pθ_[to_vary] = s
         p_['M_lim'] = p_['M']
         p_['N_lim'] = p_['N']
-        out[s] = sample(p_)
-    return out
 
-def run_params(p1, sp1, p2, sp2, params, params_θ, sample_theta_gnd=False, save=True, rep=8, **vary_kwargs):
+        if to_vary == 'N':
+            pθ_ = gen_sparse_params_θ(pθ_, s)
+
+        gen = DataGenerator(params=p_, params_θ=pθ_)
+
+        θ_gnd[s] = [gen.gen_new_theta() for _ in range(rep)] if sample_theta else [gen.theta] * rep
+        θ_fitted[s] = sample(p_, θ_gnd[s])
+
+    return θ_fitted, θ_gnd
+
+
+def run_params(p1, sp1, p2, sp2, params, params_θ, save=True, rep=8, **vary_kwargs):
     """ p2 must be in params. """
 
     θ_fitted_dict = dict()
     θ_gnd_dict = dict()
 
-    if p1 in params:
-        vary_p = True
-    elif p1 in params_θ:
-        vary_p = False
-    else:
-        raise ValueError('Unknown parameter to vary!')
-
     for u in reversed(sp1):  # Start with largest to detect any failure.
         print(f'{u=}')
         p = params.copy()
         pθ = params_θ.copy()
+        if p1 not in p and p1 not in pθ:
+            raise ValueError('Unknown p1 to vary!')
+        p[p1] = pθ[p1] = u
 
-        if vary_p:
-            p[p1] = u
-        else:
-            pθ[p1] = u
-
-        gen = DataGenerator(params=p, params_θ=pθ)  # Generate theta
-        if sample_theta_gnd:
-            θ_gnd = [gen.gen_new_theta() for _ in range(rep)]
-        else:
-            θ_gnd = gen.theta
-
-        θ_fitted_dict[u] = vary(p2, sp2, p, θ_gnd, rep=rep, **vary_kwargs)
-        θ_gnd_dict[u] = θ_gnd
+        θ_fitted_dict[u], θ_gnd_dict[u] = vary(p2, sp2, p, pθ, rep=rep, **vary_kwargs)
 
         if save:
             with open(f'{p1}{u}{p2}.pk', 'wb') as f:
@@ -120,6 +127,7 @@ def plot_bias_var(θs, gnd, name='w'):
 
     plt.show()
 
+
 def calc_median_cv(th):
     mask = np.zeros(th.shape[1:], dtype=np.bool)
     N = mask.shape[1]
@@ -139,7 +147,6 @@ def calc_median_cv(th):
     return np.mean((sd / mean))
 
 
-
 def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
     trim = 0
     assert len(thetas_gnd) == len(sp)
@@ -150,18 +157,11 @@ def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
         ci = []
 
         for j, (λ, θs) in enumerate(from_run[u].items()):
-            sample_θ = True if isinstance(thetas_gnd[u], list) else False
-
-            if sample_θ:
-                results = [func((thetas_gnd[u][k]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]  # rep
-            else:
-                results = [func((thetas_gnd[u]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]
-
+            results = [func((thetas_gnd[u][λ][k]['w'], θs['w'][k, ...])) for k in range(len(θs['w']))]  # rep
             x.append(λ)
             y.append(np.mean(results))
             ci.append(1.96 * np.sqrt(np.var(results)))
 
-        # for x, y in processed.items():
         x = np.array(x)[trim:]
         if norm:
             y = np.array(y)[trim:] / p['N']**2
@@ -173,6 +173,7 @@ def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
         idx_min = np.argmin(y)
         ax.plot(x[idx_min], y[idx_min], f'*C{i}')
         ax.fill_between(x, y - ci, y + ci, alpha=0.3)
+
 
 def gen_hamming_plot(*args, xlabel=None, **kwargs):
     fig, axs = plt.subplots(ncols=3, figsize=(12, 4), dpi=300)
@@ -194,7 +195,7 @@ def gen_hamming_plot(*args, xlabel=None, **kwargs):
     return fig, axs
 
 
-def gen_hamming_wrapper(*args, title=None, save_name=None, **kwargs):
+def gen_hamming_figure(*args, title=None, save_name=None, **kwargs):
     gen_hamming_plot(*args, **kwargs)
     if title is not None:
         plt.suptitle(title)
@@ -225,7 +226,7 @@ if __name__ == '__main__':
 
     N_sp = [40, 80, 160]
     M_sp = [100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-    #
+
     out = dict()
     for N in reversed(N_sp):
         p = params_base.copy()

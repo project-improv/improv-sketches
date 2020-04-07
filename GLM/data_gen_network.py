@@ -27,7 +27,7 @@ class DataGenerator:
 
         return self._gen_theta(**self.params_θ)
 
-    def _gen_theta(self, seed=0, p_inh=0.5, base=0, connectedness=3, p_rand=0., rand_w=False, max_w=0.05):
+    def _gen_theta(self, seed=0, p_inh=0.5, base=0, connectedness=3, p_rand=0., rand_w=False, max_w=0.05, **kwargs):
         '''
         Generates model parameters.
         Returns a theta dictionary:
