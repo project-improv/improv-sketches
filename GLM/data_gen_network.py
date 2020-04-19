@@ -72,16 +72,36 @@ class DataGenerator:
         theta['h'][neutype == 1, :] = -0.1 * np.exp(-3 * tau).T  # mag (1.5e-3, 2e-1)
         theta['h'][neutype == -1, :] = -0.1 * np.exp(-3 * tau).T  # mag (7e-2, 5e-1)
 
+
+        theta['k'] = self.gen_stim_w() if 'ds' in self.params else np.zeros((N, 1))
+
         return theta
 
+    def gen_stim_w(self):
+        r = 0.5
+        sd = 1
+        N = self.params['N']
+        ds = self.params['ds']
+
+        base = np.zeros((N, ds))
+        center = ds // 2
+        bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
+        chunk = N//ds
+        for n in range(ds):
+            base[n * chunk: np.clip((n+1) * chunk, a_min=0, a_max=N), :] = np.roll(bell, n - center)
+
+        return base
+
     def gen_spikes(self, params=None, seed=2):
-        p = self.params if params is None else params
-        return self._gen_spikes(self.theta['w'], self.theta['h'], self.theta['b'],
-                                p['dt'], p['dh'], p['N'], p['M'], seed=seed)
+        p = self.params.copy() if params is None else params.copy()
+        if 'ds' not in p:
+            p['ds'] = 1
+        return self._gen_spikes(self.theta['w'], self.theta['h'], self.theta['b'], self.theta['k'],
+                                p['dt'], p['dh'], p['ds'], p['N'], p['M'], seed=seed)
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(w, h, b, dt, dh, N, m, seed=2):
+    def _gen_spikes(w, h, b, k, dt, dh, ds, N, m, seed=2, limit=100., stim_int=50):
         '''
         Generates spike counts from the model
         Returns a data dict:
@@ -102,23 +122,32 @@ class DataGenerator:
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
 
         # simulate the model for next M samples (time steps)
-        for j in range(m):  # step through time
+        for t in range(m):  # step through time
             for i in range(N):  # step through neurons
                 # compute model firing rate
-                if j == 0:
+                if t == 0:
                     hist = 0
-                elif j < dh:
-                    hist = np.sum(h[i, :j] * y[i, :j])
+                elif t < dh:
+                    hist = np.sum(h[i, :t] * y[i, :t])
                 else:
-                    hist = np.sum(h[i, :] * y[i, j - dh:j])
+                    hist = np.sum(h[i, :] * y[i, t - dh:t])
 
-                if j == 0:
+                if t == 0:
                     weights = 0
                 else:
-                    weights = w[i, :].dot(y[:, j - 1])
+                    weights = w[i, :].dot(y[:, t - 1])
 
-                r[i, j] = f(b[i] + hist + weights)
-                y[i, j] = np.random.poisson(r[i, j] * dt)
+                if t == 0:
+                    stim = 0
+                else:
+                    stim = k[i, (t // stim_int) % ds]
+
+                # Clip. np.clip not supported in Numba.
+                r[i, t] = f(b[i] + hist + weights + stim)
+                above = (r[i, t] >= limit) * limit
+                below = (r[i, t] < limit)
+                r[i, t] = r[i, t] * below + above
+                y[i, t] = np.random.poisson(r[i, t] * dt)
 
         return r, y
 
@@ -134,8 +163,9 @@ class DataGenerator:
 
 if __name__ == '__main__':
 
-    n = 10
+    n = 80
     dh = 2
+    ds = 8
     m = 2000
     dt = 1.
 
@@ -144,20 +174,23 @@ if __name__ == '__main__':
         'dh': dh,
         'M': m,
         'dt': dt,
+        'ds': ds
     }
 
     params_θ = {
-        'seed': 0,
-        'p_inh': 0.5,
+        'seed': 3,
+        'p_inh': 0.6,
         'p_rand': 0.,
         'base': 0.,
-        'connectedness': 3,
+        'connectedness': 9,
+        'max_w': 0.05
     }
 
     gen = DataGenerator(params=p, params_θ=params_θ)
 
     #%% Plot θ_w
     gen.plot_theta_w()
+    print(np.sum(gen.theta['w'] != 0) / gen.theta['w'].size)
 
     #%% Save θ
     with open('theta_dict.pickle', 'wb') as f:
@@ -181,16 +214,6 @@ if __name__ == '__main__':
     np.savetxt('data_sample.txt', data['y'])
     # np.savetxt('rates_sample.txt', data['r'])
 
-    plt.imshow(y[:, :p['N']*4])
+    plt.imshow(r[:, :p['N']*4])
     plt.colorbar()
     plt.show()
-
-
-    # Multithreading.
-    # M_core = [M // cores] * (cores - 1) + [M - M // cores * (cores - 1)]
-    # def proc(m):
-    #     return generateData(theta['w'], np.flip(theta['h'], axis=1), theta['b'], p['dt'], p['dh'], p['N'], m)
-    #
-    # with Pool(cores) as pool:
-    #     futures = list(pool.map(proc, M_core))
-    # r, y = np.hstack([r for (r, y) in futures]), np.hstack([y for (r, y) in futures]).astype(np.int8)
