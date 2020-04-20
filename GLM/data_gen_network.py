@@ -101,7 +101,7 @@ class DataGenerator:
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(w, h, b, k, dt, dh, ds, N, m, seed=2, limit=100., stim_int=50):
+    def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=100., stim_int=50):
         '''
         Generates spike counts from the model
         Returns a data dict:
@@ -113,16 +113,22 @@ class DataGenerator:
         # nonlinearity; exp()
         f = np.exp
 
-        r = np.zeros((N, m))  # rates
-        y = np.zeros((N, m))  # spikes
+        r = np.zeros((N, M))  # rates
+        y = np.zeros((N, M))  # spikes
+        s = np.zeros((ds, M))
 
         # the initial rate (no history); generate randomly
         init = np.random.randn(N) * 0.1 - 1
         r[:, 0] = f(init[0])
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
 
+
         # simulate the model for next M samples (time steps)
-        for t in range(m):  # step through time
+        for t in range(M):  # step through time
+
+            stim_curr = (t // stim_int) % ds
+            s[stim_curr, t] = 1.
+
             for i in range(N):  # step through neurons
                 # compute model firing rate
                 if t == 0:
@@ -140,16 +146,18 @@ class DataGenerator:
                 if t == 0:
                     stim = 0
                 else:
-                    stim = k[i, (t // stim_int) % ds]
+                    stim = k[i, stim_curr]
+
+                r[i, t] = f(b[i] + hist + weights + stim)
 
                 # Clip. np.clip not supported in Numba.
-                r[i, t] = f(b[i] + hist + weights + stim)
                 above = (r[i, t] >= limit) * limit
                 below = (r[i, t] < limit)
                 r[i, t] = r[i, t] * below + above
+
                 y[i, t] = np.random.poisson(r[i, t] * dt)
 
-        return r, y
+        return r, y, s
 
 
     def plot_theta_w(self):
@@ -200,7 +208,7 @@ if __name__ == '__main__':
     print('Simulating model...')
 
     #%% Generate data
-    r, y = gen.gen_spikes(seed=0)
+    r, y, s = gen.gen_spikes(seed=0)
     data = {'y': y.astype(np.uint8), 'r': r}
     print('Spike Counts:')
     print('mean: ', np.mean(data['y']))

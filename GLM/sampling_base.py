@@ -47,7 +47,7 @@ def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, 
             print(f'Repeat {j + 1}/{rep}.')
             gen = DataGenerator(params, theta=gnd[j])
 
-            r, y = gen.gen_spikes(params=p, seed=10 * j)
+            r, y, s = gen.gen_spikes(params=p, seed=10 * j)
             if not np.isfinite(np.mean(r)):
                 raise Exception('Generator blew up.')
             c = CompareOpt(p, y, s)

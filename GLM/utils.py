@@ -12,6 +12,14 @@ def gen_rand_theta(p, seed=1234):
     h = 1 / 20 * np.random.random((p['N_lim'], p['dh']))
     return {'h': h, 'w': w, 'b': b, 'k': k}
 
+def gen_sparse_params_θ(params_θ, N, p=0.05):
+    if int(p * N) + 1 != p * N + 1:
+        raise ValueError('Number of connections per neuron not integer.')
+
+    params_θ_ = params_θ.copy()
+    params_θ_['connectedness'] = int(p * N) + 1
+    return params_θ_
+
 def online_sqrt_decay(step_size, window_size):
     def schedule(i):
         return (i <= window_size) * i / window_size * step_size \

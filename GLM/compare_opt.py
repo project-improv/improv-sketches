@@ -201,7 +201,7 @@ if __name__ == '__main__':
     gen = DataGenerator(params=params, params_θ=params_θ)
 
     s = np.zeros((params['ds'], params['M']), dtype=np.float32)
-    r, y = gen.gen_spikes(params=params, seed=0)
+    r, y, s = gen.gen_spikes(params=params, seed=0)
     c = CompareOpt(params, y, s)
     c.run(opts, theta=gen_rand_theta(params), gnd_data=gen.theta, use_gpu=True, save_theta=10000,
           iters_offline=10000, hamming_thr=0.1, verbose=True)
