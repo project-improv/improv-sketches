@@ -14,9 +14,17 @@ class DataGenerator:
     def __init__(self, params, params_θ=None, theta=None):
         self.params = params.copy()
         self.params_θ = None if params_θ is None else params_θ.copy()
-        self.theta = theta
-        if self.theta is None:
+        if theta is None:
             self.theta = self._gen_theta(**self.params_θ)
+        else:
+            self.theta = {k: np.asarray(v, dtype=np.float64) for k, v in theta.items()}
+            assert self.theta['w'].shape == (self.params['N'], self.params['N'])
+            assert self.theta['h'].shape == (self.params['N'], self.params['dh'])
+            assert self.theta['k'].shape == (self.params['N'], self.params['ds'])
+            if len(self.theta['b'].shape) == 2:
+                self.theta['b'] = self.theta['b'].flatten()
+            assert len(self.theta['b']) == params['N']
+
         self.i = 0
 
     def gen_new_theta(self):
