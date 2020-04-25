@@ -100,16 +100,16 @@ class DataGenerator:
 
         return base
 
-    def gen_spikes(self, params=None, seed=2):
+    def gen_spikes(self, params=None, **kwargs):
         p = self.params.copy() if params is None else params.copy()
         if 'ds' not in p:
             p['ds'] = 1
         return self._gen_spikes(self.theta['w'], self.theta['h'], self.theta['b'], self.theta['k'],
-                                p['dt'], p['dh'], p['ds'], p['N'], p['M'], seed=seed)
+                                p['dt'], p['dh'], p['ds'], p['N'], p['M'], **kwargs)
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=100., stim_int=50):
+    def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=20., stim_int=50):
         '''
         Generates spike counts from the model
         Returns a data dict:
