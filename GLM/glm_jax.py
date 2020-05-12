@@ -124,14 +124,12 @@ class GLMJax:
         y, s, indicator = self._check_arrays(y, s, indicator)[2:]
         linear = GLMJax._run_linear(self.theta, self.params, y, s)
         log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
-        return np.exp(log_r̂) * indicator
+        return (np.exp(log_r̂) * indicator)[:self.current_N, :self.current_M]
 
     def linear_contributions(self, y, s, indicator=None):
         y, s, indicator = self._check_arrays(y, s, indicator)[2:]
         linear = GLMJax._run_linear(self.theta, self.params, y, s)
-        if indicator is not None:
-            return linear[0], *[u*indicator for u in linear[1:4]], linear[4]
-        return linear
+        return linear[0][:self.current_N], *[(u*indicator)[:self.current_N, :self.current_M] for u in linear[1:4]], linear[4]
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -223,6 +221,7 @@ class GLMJax:
         linear = GLMJax._run_linear(θ, p, y, s)
         log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
 
+        log_r̂ *= indicator
         r̂ = np.exp(log_r̂)
         r̂ *= indicator
 
