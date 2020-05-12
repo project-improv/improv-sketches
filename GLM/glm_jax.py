@@ -33,10 +33,13 @@ class GLMJax:
         :type p: dict
         :param theta: Dictionary of ndarray weights. Must conform to parameters in p.
         :type theta: dict
-        :param optimizer: Dictionary of optimizer name and hyperparameters from jax.experimental.optimizers. Ex. {'name': 'SGD, **kwargs}
+        :param optimizer: Dictionary of optimizer name and hyperparameters from jax.experimental.optimizers.
+            Ex. {'name': 'sgd', 'step_size': 1e-4}
         :type optimizer: dict
         :param use_gpu: Use GPU
         :type use_gpu: bool
+        :param rpf: "Round per frame". Number of times to repeat `fit` using the same data.
+        :type rpf: int
         """
 
         self.use_gpu = use_gpu
@@ -82,10 +85,13 @@ class GLMJax:
         self.iter = 0
 
     def ll(self, y, s, indicator=None):
-        return self._ll(self.θ, self.params, *self._check_arrays(y, s, indicator))
+        return self._ll(self.theta, self.params, *self._check_arrays(y, s, indicator))
 
     @profile
     def fit(self, y, s, return_ll=False, indicator=None):
+        """
+        Fit model. Returning log-likelihood is ~2 times slower.
+        """
         if return_ll:
             self._θ, self.iter, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params,
                                                     self.iter, *self._check_arrays(y, s, indicator))
@@ -111,13 +117,21 @@ class GLMJax:
             θ = opt_update(iter, Δ, θ)
         return θ
 
-    def get_grad(self, y, s, indicator=None) -> DeviceArray:
-        return grad(self._ll)(self.θ, self.params, *self._check_arrays(y, s, indicator)).copy()
+    def grad(self, y, s, indicator=None) -> DeviceArray:
+        return grad(self._ll)(self.theta, self.params, *self._check_arrays(y, s, indicator)).copy()
 
     def predict(self, y, s, indicator=None):
         y, s, indicator = self._check_arrays(y, s, indicator)[2:]
-        log_r̂ = GLMJax._predict(self.θ, self.params, y, s)
+        linear = GLMJax._run_linear(self.theta, self.params, y, s)
+        log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
         return np.exp(log_r̂) * indicator
+
+    def linear_contributions(self, y, s, indicator=None):
+        y, s, indicator = self._check_arrays(y, s, indicator)[2:]
+        linear = GLMJax._run_linear(self.theta, self.params, y, s)
+        if indicator is not None:
+            return linear[0], *[u*indicator for u in linear[1:4]], linear[4]
+        return linear
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -153,11 +167,12 @@ class GLMJax:
                 indicator_[:y.shape[0], :y.shape[1]] = indicator
             else:
                 indicator_[:y.shape[0], :y.shape[1]] = 1.
+            y, s, indicator = y_, s_, indicator_
 
         if y.shape[1] > M_lim:
             raise ValueError('Data are too wide (M exceeds M_lim).')
 
-        return self.current_M, self.current_N, y_, s_, indicator_
+        return self.current_M, self.current_N, y, s, indicator
 
     def _increase_θ_size(self) -> None:
         """
@@ -166,7 +181,7 @@ class GLMJax:
         """
         N_lim = self.params['N_lim']
         print(f"Increasing neuron limit to {2 * N_lim}.")
-        self._θ = self.θ
+        self._θ = self.theta
 
         self._θ['w'] = onp.concatenate((self._θ['w'], onp.zeros((N_lim, N_lim))), axis=1)
         self._θ['w'] = onp.concatenate((self._θ['w'], onp.zeros((N_lim, 2 * N_lim))), axis=0)
@@ -185,7 +200,7 @@ class GLMJax:
 
     @staticmethod
     @partial(jit, static_argnums=(1,))
-    def _predict(θ: Dict, p: Dict, y, s) -> DeviceArray:
+    def _run_linear(θ: Dict, p: Dict, y, s) -> Tuple:
         """
         Return log rates from the model. That is, the linear part of the model.
         """
@@ -195,7 +210,8 @@ class GLMJax:
         # Necessary padding since history convolution shrinks M.
         cal_weight = np.hstack((np.zeros((p['N_lim'], p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]))
 
-        return θ["b"] + (cal_stim + cal_weight + cal_hist) + np.log(p['dt'])
+        return θ["b"], cal_weight, cal_hist, cal_stim, np.log(p['dt'])
+
 
     @staticmethod
     @partial(jit, static_argnums=(1,))
@@ -204,7 +220,8 @@ class GLMJax:
         Return negative log-likelihood of data given model.
         ℓ1 and ℓ2 regularizations are specified in params.
         """
-        log_r̂ = GLMJax._predict(θ, p, y, s)
+        linear = GLMJax._run_linear(θ, p, y, s)
+        log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
 
         r̂ = np.exp(log_r̂)
         r̂ *= indicator
@@ -227,15 +244,15 @@ class GLMJax:
         return np.hstack((np.zeros((p['N_lim'], p['dh'])), cvd))
 
     @property
-    def θ(self) -> Dict:
+    def theta(self) -> Dict:
         return self.get_params(self._θ)
 
     @property
     def weights(self) -> onp.ndarray:
-        return onp.asarray(self.θ['w'][:self.current_N, :self.current_N])
+        return onp.asarray(self.theta['w'][:self.current_N, :self.current_N])
 
     def __repr__(self):
-        return f'simGLM({self.params}, θ={self.θ}, gpu={self.use_gpu})'
+        return f'simGLM({self.params}, θ={self.theta}, gpu={self.use_gpu})'
 
     def __str__(self):
         return f'simGLM Iteration: {self.iter}, \n Parameters: {self.params})'
