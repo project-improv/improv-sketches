@@ -1,0 +1,10 @@
+channels:
+  - conda-forge
+dependencies:
+  - caiman
+  - numpy
+  - matplotlib
+  - seaborn
+  - jupyter
+  - jupyterlab
+  - networkx
