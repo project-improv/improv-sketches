@@ -41,3 +41,11 @@ def calc_hamming(gnd, θ, thr=0.1):
     gnd_for_hamming = np.abs(gnd) > thr * np.max(np.abs(gnd)).astype(np.int)
     binarized = (np.abs(θ) > thr * np.max(np.abs(θ))).astype(np.int)
     return binarized - gnd_for_hamming  # FP == 1, FN == -1
+
+def plot_redblue(ax, data, fig=None, **kwargs):
+    scale = np.max(np.abs(data))
+    x = ax.imshow(data, vmin=-scale, vmax=scale, **kwargs)
+    x.set_cmap('bwr')
+    ax.grid(False)
+    if fig:
+        fig.colorbar(x)

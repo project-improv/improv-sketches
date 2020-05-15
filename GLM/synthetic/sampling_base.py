@@ -3,9 +3,9 @@ import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from GLM.model.compare_opt import CompareOpt
+from GLM.synthetic.data_gen import DataGenerator
 from GLM.utils import *
-from compare_opt import CompareOpt
-from data_gen_network import DataGenerator
 
 """
 Generate multiple samples of data, fit model, and save θ.
@@ -13,13 +13,11 @@ Generate multiple samples of data, fit model, and save θ.
 
 sns.set()
 
-def gen_sparse_params_θ(params_θ, N, p=0.05):
+
+def calc_sparse_connectedness(params_θ, N, p=0.05):
     if int(p * N) + 1 != p * N + 1:
         raise ValueError('Number of connections per neuron not integer.')
-
-    p = params_θ.copy()
-    p['connectedness'] = int(p * N) + 1
-    return p
+    return int(params_θ * N) + 1
 
 
 def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, sample_theta=True):
@@ -40,7 +38,6 @@ def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, 
     def sample(p, gnd):
         """ Sample data and fit model. """
         θ = {name: np.zeros((rep, *arr.shape)) for name, arr in gen_rand_theta(p).items()}
-        s = np.zeros((p['ds'], p['M']), dtype=np.float32)  # Zero for now.
         # n_spikes = np.zeros((rep, p['N_lim']))
 
         for j in range(rep):
@@ -73,7 +70,7 @@ def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, 
         p_['N_lim'] = p_['N']
 
         if to_vary == 'N':
-            pθ_ = gen_sparse_params_θ(pθ_, s)
+            pθ_['connectedness'] = calc_sparse_connectedness(pθ_, s)
 
         gen = DataGenerator(params=p_, params_θ=pθ_)
 
@@ -142,7 +139,7 @@ def calc_median_cv(th):
             mask[i, i + 1] = 1
 
     sd = np.sqrt(np.var(th, axis=0))
-    mean = 0.05 #* np.abs(np.mean(th, axis=0))
+    mean = 0.05  # * np.abs(np.mean(th, axis=0))
     # mask = np.abs(np.mean(th, axis=0)) > 0.1 * np.max(th)
     return np.mean((sd / mean))
 
@@ -164,8 +161,8 @@ def plot_hamming(ax, func, from_run, thetas_gnd, sp, norm=False):
 
         x = np.array(x)[trim:]
         if norm:
-            y = np.array(y)[trim:] / p['N']**2
-            ci = np.array(ci)[trim:] / p['N']**2
+            y = np.array(y)[trim:] / p['N'] ** 2
+            ci = np.array(ci)[trim:] / p['N'] ** 2
         else:
             y = np.array(y)[trim:]
             ci = np.array(ci)[trim:]
@@ -213,9 +210,19 @@ if __name__ == '__main__':
         'M': 10000,
         'dh': 2,
         'dt': 1,
-        'ds': 1,
+        'ds': 8,
         'λ1': 2.4,
         'λ2': 0.0
+    }
+
+    params_θ = {
+        'seed': 0,
+        'p_inh': 0.6,
+        'p_rand': 0.,
+        'base': 0.,
+        'connectedness': 3,
+        'rand_w': False,
+        'max_w': 0.05
     }
 
     params_base['M_lim'] = params_base['M']
@@ -231,12 +238,12 @@ if __name__ == '__main__':
     for N in reversed(N_sp):
         p = params_base.copy()
         p['N_lim'] = p['N'] = N
-        gen = DataGenerator(params=p, params_θ=gen_sparse_params_θ(N))
+        gen = DataGenerator(params=p, params_θ=params_θ)
         out[N] = vary('M', M_sp, p, gen.theta, rep=5, rpf=10, iters=1000)
 
         with open(f'N{p["N"]}M.pk', 'wb') as f:
             pickle.dump(out[N], f)
-#%%
+    # %%
     gen_hamming_plot(out, N_sp, params_base, varyN=True, xlabel='M', norm=True)
     plt.suptitle('FP/FN vs Data Length. Normalized to N^2. Vary N. λ=2.4, 5% sparsity.')
     plt.legend()
@@ -244,7 +251,7 @@ if __name__ == '__main__':
     plt.savefig('length_N_fpfn.png')
     plt.show()
 
-    #%% Data Length / MSE plot.
+    # %% Data Length / MSE plot.
     fig, ax = plt.subplots(dpi=300)
     for i, N in enumerate(reversed(N_sp)):
         cv = np.zeros(len(M_sp))

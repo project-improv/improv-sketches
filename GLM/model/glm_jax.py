@@ -126,6 +126,9 @@ class GLMJax:
         log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
         return (np.exp(log_r̂) * indicator)[:self.current_N, :self.current_M]
 
+    def residual(self, y, s, indicator=None):
+        return y - self.predict(y, s, indicator)
+
     def linear_contributions(self, y, s, indicator=None):
         y, s, indicator = self._check_arrays(y, s, indicator)[2:]
         linear = GLMJax._run_linear(self.theta, self.params, y, s)

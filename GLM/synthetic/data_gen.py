@@ -7,6 +7,8 @@ import numba
 import numpy as np
 import seaborn as sns
 
+from GLM.utils import *
+
 sns.set()
 
 
@@ -81,11 +83,11 @@ class DataGenerator:
         theta['h'][neutype == -1, :] = -0.1 * np.exp(-3 * tau).T  # mag (7e-2, 5e-1)
 
 
-        theta['k'] = self.gen_stim_w() if 'ds' in self.params else np.zeros((N, 1))
+        theta['k'] = self.gen_stim_k() if 'ds' in self.params else np.zeros((N, 1))
 
         return theta
 
-    def gen_stim_w(self):
+    def gen_stim_k(self):
         r = 0.5
         sd = 1
         N = self.params['N']
@@ -149,7 +151,7 @@ class DataGenerator:
                 if t == 0:
                     weights = 0
                 else:
-                    weights = w[i, :].dot(y[:, t - 1])
+                    weights = np.dot(w[i, :], y[:, t - 1])
 
                 if t == 0:
                     stim = 0
@@ -168,9 +170,9 @@ class DataGenerator:
         return r, y, s
 
 
-    def plot_theta_w(self):
-        scale = np.max(np.abs(self.theta['w']))
-        x = plt.imshow(self.theta['w'], vmin=-scale, vmax=scale)
+    def plot_theta(self, name):
+        scale = np.max(np.abs(self.theta[name]))
+        x = plt.imshow(self.theta[name], vmin=-scale, vmax=scale)
         x.set_cmap('bwr')
         plt.grid(False)
         plt.colorbar()
@@ -205,7 +207,9 @@ if __name__ == '__main__':
     gen = DataGenerator(params=p, params_θ=params_θ)
 
     #%% Plot θ_w
-    gen.plot_theta_w()
+    fig, ax = plt.subplots(dpi=300)
+    plot_redblue(ax, gen.theta['w'], fig=fig)
+    plt.show()
     print(np.sum(gen.theta['w'] != 0) / gen.theta['w'].size)
 
     #%% Save θ
@@ -230,6 +234,9 @@ if __name__ == '__main__':
     np.savetxt('data_sample.txt', data['y'])
     # np.savetxt('rates_sample.txt', data['r'])
 
-    plt.imshow(r[:, :p['N']*4])
-    plt.colorbar()
+    fig, ax = plt.subplots(dpi=300)
+    u = ax.imshow(r[:, :p['N']*4])
+    ax.grid(0)
+    fig.colorbar(u)
+    ax.set_title('Synthetic data with stim')
     plt.show()

@@ -1,15 +1,16 @@
+import time
+from typing import Dict, List
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 import skopt
-import time
+from jax.numpy import DeviceArray
 from numpy import ndarray
 from sklearn.metrics import mean_squared_error
 
-from data_gen_network import DataGenerator
-from jax.numpy import DeviceArray
-from glm_jax import GLMJaxSynthetic
+from GLM.model.glm_jax import GLMJaxSynthetic
+from GLM.synthetic.data_gen import DataGenerator
 from GLM.utils import *
-from typing import Dict, List
 
 """
 Create a log-likelihood graph over time using different optimizers.
@@ -105,18 +106,18 @@ class CompareOpt:
                     t0 = time.time()
 
                 if save_grad and (i == 1 or i % save_grad == 0 or i == iters - 1):
-                    self.grad[name].append(model.get_grad(y, s))
+                    self.grad[name].append(model.grad(y, s))
 
                 if save_theta and (i == 1 or i % save_theta == 0 or i == iters - 1):
-                    self.theta[name].append(model.θ)
+                    self.theta[name].append(model.theta)
 
                 if i % self.checkpoint == 0 or i == iters - 1:
                     idx = int(model.iter / self.checkpoint)
 
                     if gnd_data:
                         for j, name_θ in enumerate(self.names_θ):
-                            mse[idx, j] = mean_squared_error(model.θ[name_θ], gnd_data[name_θ])
-                        ham = calc_hamming(gnd_data['w'], model.θ['w'], thr=hamming_thr)
+                            mse[idx, j] = mean_squared_error(model.theta[name_θ], gnd_data[name_θ])
+                        ham = calc_hamming(gnd_data['w'], model.theta['w'], thr=hamming_thr)
                         hamming[idx, 0] = np.sum(ham == 1)  # FP
                         hamming[idx, 1] = np.sum(ham == -1)  # FN
 
@@ -126,7 +127,7 @@ class CompareOpt:
                         raise Exception(f'Blew up at {i}.')
 
                     if verbose and (i % verbose == 0 or i == iters - 1):
-                        print(f"{opt['name']}, step: {i:5.0f}, w_norm: {mse[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.θ['w'])):8.5e}, ll:{ll[idx]:8.5f}")
+                        print(f"{opt['name']}, step: {i:5.0f}, w_norm: {mse[idx, 2]:8.5e}, hamming FP/FN: {hamming[idx, 0], hamming[idx, 1]}, |θw|: {np.sum(np.abs(model.theta['w'])):8.5e}, ll:{ll[idx]:8.5f}")
 
                 else:
                     model.fit(return_ll=False, indicator=indicator)  # Don't calculate LL. ~2x faster.
@@ -168,30 +169,31 @@ class CompareOpt:
 
 if __name__ == '__main__':
     params = {  # For both data generation and fitting.
-        'N': 50,
-        'M': 20000,
-        'dh': 4,
+        'N': 40,
+        'M': 10000,
+        'dh': 2,
         'dt': 1,
         'ds': 1,
-        'λ1': 1.,
-        'λ2': 0.05
+        'λ1': 4,
+        'λ2': 0.0
     }
 
     params['M_lim'] = params['M']
     params['N_lim'] = params['N']
 
     params_θ = {
-        'seed': 0,
-        'p_inh': 0.5,
+        'seed': 3,
+        'p_inh': 0.6,
         'p_rand': 0.,
         'base': 0.,
-        'connectedness': 4,
-        'rand_w': False
+        'connectedness': 9,
+        'rand_w': False,
+        'max_w': 0.05,
     }
 
     opts = [
-        {'name': 'sgd', 'step_size': 10, 'offline': True},
-        {'name': 'nesterov', 'step_size': 10, 'offline': True, 'mass': 0.9},
+        # {'name': 'sgd', 'step_size': 10, 'offline': True},
+        {'name': 'nesterov', 'step_size': 1, 'offline': True, 'mass': 0.9},
         {'name': 'adam', 'step_size': 1e-3, 'offline': True},
         {'name': 'adagrad', 'step_size': 1, 'offline': True},
         {'name': 'rmsprop', 'step_size': 1e-3, 'offline': True},
@@ -200,7 +202,6 @@ if __name__ == '__main__':
 
     gen = DataGenerator(params=params, params_θ=params_θ)
 
-    s = np.zeros((params['ds'], params['M']), dtype=np.float32)
     r, y, s = gen.gen_spikes(params=params, seed=0)
     c = CompareOpt(params, y, s)
     c.run(opts, theta=gen_rand_theta(params), gnd_data=gen.theta, use_gpu=True, save_theta=10000,
