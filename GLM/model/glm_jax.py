@@ -132,7 +132,7 @@ class GLMJax:
     def linear_contributions(self, y, s, indicator=None):
         y, s, indicator = self._check_arrays(y, s, indicator)[2:]
         linear = GLMJax._run_linear(self.theta, self.params, y, s)
-        return linear[0][:self.current_N], *[(u*indicator)[:self.current_N, :self.current_M] for u in linear[1:4]], linear[4]
+        return (linear[0][:self.current_N], *[(u*indicator)[:self.current_N, :self.current_M] for u in linear[1:4]], linear[4])
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -207,7 +207,7 @@ class GLMJax:
         """
         cal_stim = θ["k"] @ s
         cal_hist = GLMJax._convolve(p, y, θ["h"])
-        cal_weight = θ["w"] @ y
+        cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
         # Necessary padding since history convolution shrinks M.
         cal_weight = np.hstack((np.zeros((p['N_lim'], p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]))
 
