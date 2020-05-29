@@ -1,7 +1,7 @@
 import struct
-import numpy as np
-
 from collections import namedtuple
+
+import numpy as np
 
 Header = namedtuple('Header', [
     'framesPerPulse',
@@ -19,8 +19,8 @@ Header = namedtuple('Header', [
 Field = namedtuple('Field', ['n', 'type_'])
 
 # Parameters
-filename = "09-04-14_1715_F1_compl_pyoga_ZOOM_2_z-1.tbif"
-save_path = "09-04-14_1715_F1_compl_pyoga_ZOOM_2_z-1.npz"
+filename = "08-17-14_1437_F1_6dpfCOMPLETESET_WB_overclimbing_z-1.tbif"
+save_path = "08-17-14_1437_F1_6dpfCOMPLETESET_WB_overclimbing_z-1.npz"
 header_size = 48
 header_type = "=IdHHffffdd"
 data_format = {
@@ -68,9 +68,12 @@ img = np.reshape(img, (n, header.h, header.w))
 
 print(f'Writing to {save_path}.')
 np.savez(save_path, **{k: globals()[k] for k in data_format.keys()})
+np.savetxt('../stim_data.txt', stim)
+np.savetxt('../mean.txt', np.mean(img, axis=0))
 print('OK')
 
-#%%
+# %%
+
 from skimage.external.tifffile import imsave
 
-imsave(save_path+'.tif', img)
+imsave(save_path + '.tif', img)
