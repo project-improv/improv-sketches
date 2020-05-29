@@ -1,10 +1,27 @@
 channels:
-  - conda-forge
+- conda-forge
 dependencies:
-  - caiman
-  - numpy
-  - matplotlib
-  - seaborn
-  - jupyter
-  - jupyterlab
-  - networkx
+- python=3.7
+- cython
+- future
+- h5py
+- holoviews
+- ipyparallel
+- matplotlib
+- numpy
+- numpydoc
+- opencv
+- peakutils
+- psutil
+- pynwb
+- scikit-image
+- scikit-learn
+- scipy
+- tensorflow=1.13
+- tifffile
+- tqdm
+# GLM
+- numba
+- seaborn
+- jupyter
+- jupyterlab
