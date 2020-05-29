@@ -3,7 +3,7 @@ from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-import skopt
+
 from jax.numpy import DeviceArray
 from numpy import ndarray
 from sklearn.metrics import mean_squared_error
@@ -139,19 +139,19 @@ class CompareOpt:
 
         return self.ll
 
-    def hyper_opt(self, name, space, n_calls=30, seed=0):
-        func_run = self.run
-
-        @skopt.utils.use_named_args(space)
-        def _opt_func(**hyperp):
-            opt = {'name': name, **hyperp}
-            lls = func_run([opt])
-            if not np.isnan(lls[-1]) and np.isfinite(lls[-1]) and np.max(lls[100:]) <= 5:
-                return lls[-1, 0]
-            else:
-                return 1e5
-
-        return skopt.gp_minimize(_opt_func, space, n_calls=n_calls, random_state=seed, noise=1e-10)
+    # def hyper_opt(self, name, space, n_calls=30, seed=0):  # Hyperparameter optimization. Seems unnecessary.
+    #     func_run = self.run
+    #
+    #     @skopt.utils.use_named_args(space)
+    #     def _opt_func(**hyperp):
+    #         opt = {'name': name, **hyperp}
+    #         lls = func_run([opt])
+    #         if not np.isnan(lls[-1]) and np.isfinite(lls[-1]) and np.max(lls[100:]) <= 5:
+    #             return lls[-1, 0]
+    #         else:
+    #             return 1e5
+    #
+    #     return skopt.gp_minimize(_opt_func, space, n_calls=n_calls, random_state=seed, noise=1e-10)
 
 
     def plot_opts(self, omit=3):
