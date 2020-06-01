@@ -15,6 +15,7 @@ sns.set()
 
 
 def calc_sparse_connectedness(params_θ, N, p=0.05):
+    """ Return the connectedness required for a given N and p. See networkx documentation. """
     if int(p * N) + 1 != p * N + 1:
         raise ValueError('Number of connections per neuron not integer.')
     return int(params_θ * N) + 1
@@ -23,6 +24,9 @@ def calc_sparse_connectedness(params_θ, N, p=0.05):
 def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, sample_theta=True):
     """
     Fit the model with parameter `to_vary` being varied in `space` to obtain a sampling distribution of fitted θ.
+
+    :param sample_theta: Generate a new θ based on params for each sampling.
+        That is, the randomness also comes from θ and not from the sampling process.
     :return: A dict with {param_value: 3D-array} of θ_w.
     """
 
@@ -72,7 +76,7 @@ def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, 
         if to_vary == 'N':
             pθ_['connectedness'] = calc_sparse_connectedness(pθ_, s)
 
-        gen = DataGenerator(params=p_, params_θ=pθ_)
+        gen = DataGenerator(params=p_, params_theta=pθ_)
 
         θ_gnd[s] = [gen.gen_new_theta() for _ in range(rep)] if sample_theta else [gen.theta] * rep
         θ_fitted[s] = sample(p_, θ_gnd[s])
@@ -80,14 +84,19 @@ def vary(to_vary, space, params, params_θ, rep=8, opt=None, rpf=10, iters=500, 
     return θ_fitted, θ_gnd
 
 
-def run_params(p1, sp1, p2, sp2, params, params_θ, save=True, rep=8, **vary_kwargs):
-    """ p2 must be in params. """
+def vary_double(p1, sp1, p2, sp2, params, params_θ, save=True, rep=8, **vary_kwargs):
+    """
+    Vary two parameters sequentially.
+    p2 must be in params and not params_θ.
+
+    TODO: Should be implemented recursively.
+    """
 
     θ_fitted_dict = dict()
     θ_gnd_dict = dict()
 
     for u in reversed(sp1):  # Start with largest to detect any failure.
-        print(f'{u=}')
+        print(f'u={u}')
         p = params.copy()
         pθ = params_θ.copy()
         if p1 not in p and p1 not in pθ:
@@ -238,12 +247,12 @@ if __name__ == '__main__':
     for N in reversed(N_sp):
         p = params_base.copy()
         p['N_lim'] = p['N'] = N
-        gen = DataGenerator(params=p, params_θ=params_θ)
+        gen = DataGenerator(params=p, params_theta=params_θ)
         out[N] = vary('M', M_sp, p, gen.theta, rep=5, rpf=10, iters=1000)
 
         with open(f'N{p["N"]}M.pk', 'wb') as f:
             pickle.dump(out[N], f)
-    # %%
+    # %% Hamming plot.
     gen_hamming_plot(out, N_sp, params_base, varyN=True, xlabel='M', norm=True)
     plt.suptitle('FP/FN vs Data Length. Normalized to N^2. Vary N. λ=2.4, 5% sparsity.')
     plt.legend()
@@ -257,7 +266,7 @@ if __name__ == '__main__':
         cv = np.zeros(len(M_sp))
         for j, M in enumerate(M_sp):
             cv[j] = calc_median_cv(out[N][M]['w'])
-        ax.semilogx(M_sp, cv, f'C{i}', label=f'{N=}', alpha=0.7)
+        ax.semilogx(M_sp, cv, f'C{i}', label=f'N={N}', alpha=0.7)
 
     ax.set_title(
         'Standardized SD θ_w (n=5)\n Watt-Strogatz, 2 connections/neuron, no randomness, 60% inhibitory, fixed θw=0.05')
