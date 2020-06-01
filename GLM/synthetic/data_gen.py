@@ -4,7 +4,6 @@ import random
 import matplotlib.pyplot as plt
 import networkx as nx
 import numba
-import numpy as np
 import seaborn as sns
 
 from GLM.utils import *
@@ -13,9 +12,17 @@ sns.set()
 
 
 class DataGenerator:
-    def __init__(self, params, params_θ=None, theta=None):
+    """
+    Class for synthetic data generation.
+    Can both generate θ or spikes from θ or both.
+    """
+
+    def __init__(self, params, params_theta=None, theta=None):
+        """
+        If theta is not given, one will be provided for you based on params_θ.
+        """
         self.params = params.copy()
-        self.params_θ = None if params_θ is None else params_θ.copy()
+        self.params_θ = None if params_theta is None else params_theta.copy()
         if theta is None:
             self.theta = self._gen_theta(**self.params_θ)
         else:
@@ -39,12 +46,30 @@ class DataGenerator:
 
     def _gen_theta(self, seed=0, p_inh=0.5, base=0, connectedness=3, p_rand=0., rand_w=False, max_w=0.05, **kwargs):
         '''
-        Generates model parameters.
+        Generates model parameters based on the Watt-Strogatz small world model.
+        Weights for θ_w are binary {-max_w, max_w} by default.
+        θ_b is `base` and is the same for all neurons.
+        θ_h is an exponentially decaying negative feedback, also same for all neurons.
+
+        :param seed: Seed.
+        :param p_inh: Percent of neurons with negative weights.
+        :param base: Value for θ_b
+
+        # Parameters for θ_w
+        :param connectedness: Number of neighboring neurons to connect with (see networkx documentation).
+        :param p_rand: Percent of connections to be randomized (by location not weight).
+        :param rand_w: Randomize θ_w weight within [-max_w, max_w].
+        :param max_w: Upper absolute bound of weight value.
+
+        TODO: Set parameters for θ_k.
+
         Returns a theta dictionary:
-        theta['h']: history filters for the n neurons (dh x N)
-        theta['w']: coupling filters for the n neurons (N x N) aka weight matrix
-        theta['b']: baseline firing (N,)
+        theta['h']: history filters for n neurons (N x dh)
+        theta['w']: coupling filters for n neurons (N x N) aka weight matrix
+        theta['b']: baseline firing (N x 1)
+        theta['k']: stimulus factor (N x ds)
         '''
+
         random.seed(seed)  # For networkx.
         np.random.seed(seed)
 
@@ -55,17 +80,16 @@ class DataGenerator:
         # store model as dictionary
         theta = dict()
         n_inh = int(N * p_inh)
-        neutype = np.concatenate((-1 * np.ones(n_inh), np.ones(N-n_inh)))
+        neutype = np.concatenate((-1 * np.ones(n_inh), np.ones(N - n_inh)))
         np.random.shuffle(neutype)
 
         # baseline rates
         theta['b'] = np.zeros(N)
         theta['b'][neutype == 1] = [base] * np.sum(neutype == 1)  # 2 * np.random.rand(np.sum(excinh == 1)) - 2
         theta['b'][neutype == -1] = [base] * np.sum(neutype == -1)  # 1 + np.random.rand(np.sum(excinh == -1))
-        # theta['b'][5] = 1.
 
         # coupling filters
-        theta['w'] =  max_w * np.random.random(size=(N, N)) if rand_w else max_w * np.ones((N,N))
+        theta['w'] = max_w * np.random.random(size=(N, N)) if rand_w else max_w * np.ones((N, N))
         G = nx.connected_watts_strogatz_graph(N, connectedness, p_rand)
 
         theta['w'] *= nx.adjacency_matrix(G).todense()
@@ -82,27 +106,37 @@ class DataGenerator:
         theta['h'][neutype == 1, :] = -0.1 * np.exp(-3 * tau).T  # mag (1.5e-3, 2e-1)
         theta['h'][neutype == -1, :] = -0.1 * np.exp(-3 * tau).T  # mag (7e-2, 5e-1)
 
-
-        theta['k'] = self.gen_stim_k() if 'ds' in self.params else np.zeros((N, 1))
+        theta['k'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
 
         return theta
 
-    def gen_stim_k(self):
-        r = 0.5
-        sd = 1
+    def gen_theta_k(self, r=0.5, sd=1):
+        """
+        Generate θ_k. Based on the von Mises distribution.
+        A Gaussian centered at each of the ds spread out on the unit circle.
+        The first N // ds neurons would be centered at 0. The next would be centered at 1 and so on.
+
+        :param r: Scaling factor.
+        :param sd: Standard deviation of the normal.
+        :return θ_k (N x ds)
+        """
+
         N = self.params['N']
         ds = self.params['ds']
 
         base = np.zeros((N, ds))
         center = ds // 2
         bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
-        chunk = N//ds
+        chunk = N // ds
         for n in range(ds):
-            base[n * chunk: np.clip((n+1) * chunk, a_min=0, a_max=N), :] = np.roll(bell, n - center)
+            base[n * chunk: np.clip((n + 1) * chunk, a_min=0, a_max=N), :] = np.roll(bell, n - center)
 
         return base
 
     def gen_spikes(self, params=None, **kwargs):
+        """
+        Wrapper for self._gen_spikes. Need for dealing with cases without stimulus input.
+        """
         p = self.params.copy() if params is None else params.copy()
         if 'ds' not in p:
             p['ds'] = 1
@@ -114,9 +148,15 @@ class DataGenerator:
     def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=20., stim_int=50):
         '''
         Generates spike counts from the model
+
+        :param limit: Maximum firing rate. Anything above will be clipped.
+        :param stim_int: Duration of each stimulus.
+            Each stimulus is active for a duration of `stim_int` and cycles deterministically from first to last.
+
         Returns a data dict:
-        data['y']: spikes for each time step
-        data['r']: firing rates (lambda) for each time step
+        data['r']: firing rates (lambda) for each time step.
+        data['y']: spikes for each time step.
+        data['s']: active stimulus over time.
         '''
         np.random.seed(seed)
 
@@ -131,7 +171,6 @@ class DataGenerator:
         init = np.random.randn(N) * 0.1 - 1
         r[:, 0] = f(init[0])
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
-
 
         # simulate the model for next M samples (time steps)
         for t in range(M):  # step through time
@@ -169,7 +208,6 @@ class DataGenerator:
 
         return r, y, s
 
-
     def plot_theta(self, name):
         scale = np.max(np.abs(self.theta[name]))
         x = plt.imshow(self.theta[name], vmin=-scale, vmax=scale)
@@ -180,7 +218,6 @@ class DataGenerator:
 
 
 if __name__ == '__main__':
-
     n = 80
     dh = 2
     ds = 8
@@ -204,22 +241,22 @@ if __name__ == '__main__':
         'max_w': 0.05
     }
 
-    gen = DataGenerator(params=p, params_θ=params_θ)
+    gen = DataGenerator(params=p, params_theta=params_θ)
 
-    #%% Plot θ_w
+    # %% Plot θ_w
     fig, ax = plt.subplots(dpi=300)
     plot_redblue(ax, gen.theta['w'], fig=fig)
     plt.show()
     print(np.sum(gen.theta['w'] != 0) / gen.theta['w'].size)
 
-    #%% Save θ
+    # %% Save θ
     with open('theta_dict.pickle', 'wb') as f:
         pickle.dump(gen.theta, f)
     with open('params_dict.pickle', 'wb') as f:
         pickle.dump(p, f)
     print('Simulating model...')
 
-    #%% Generate data
+    # %% Generate data
     r, y, s = gen.gen_spikes(seed=0)
     data = {'y': y.astype(np.uint8), 'r': r}
     print('Spike Counts:')
@@ -235,7 +272,7 @@ if __name__ == '__main__':
     # np.savetxt('rates_sample.txt', data['r'])
 
     fig, ax = plt.subplots(dpi=300)
-    u = ax.imshow(r[:, :p['N']*4])
+    u = ax.imshow(r[:, :p['N'] * 4])
     ax.grid(0)
     fig.colorbar(u)
     ax.set_title('Synthetic data with stim')
