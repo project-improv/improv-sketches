@@ -12,10 +12,6 @@ from GLM.model.glm_jax import GLMJaxSynthetic
 from GLM.synthetic.data_gen import DataGenerator
 from GLM.utils import *
 
-"""
-Create a log-likelihood graph over time using different optimizers.
-
-"""
 
 try:  # kernprof
     profile
@@ -30,7 +26,11 @@ class CompareOpt:
     """
     Wrapper class of GLMJaxSynthetic for comparing optimizers and collecting fitting progress.
     """
-    def __init__(self, params, y, s, checkpoint=100):
+
+    def __init__(self, params, y, s):
+        """
+        To minimize CPU-GPU transfer, all data are given at initialization.
+        """
         self.y, self.s = y, s
         self.params = params
 
@@ -50,7 +50,6 @@ class CompareOpt:
         self.total_M = self.y.shape[1]
 
         self.names_θ = ['b', 'h', 'w']
-        self.checkpoint = checkpoint
 
         self.N_idx = np.zeros(self.total_M, dtype=np.int)
         for i in range(self.total_M):  # Number of neurons at each time step.
@@ -58,28 +57,31 @@ class CompareOpt:
 
     @profile
     def run(self, optimizers, theta=None, resume=False, save_grad=None, save_theta=None, use_gpu=False, gnd_data=None,
-            iters_offline=None, hamming_thr=0.2, indicator=None, rpf=1, verbose=0):
+            checkpoint=100, iters_offline=None, hamming_thr=0.2, indicator=None, rpf=1, verbose=0):
         """
-        optimizers: a list of dict.
-        theta: dict of weights.
-        resume: continue training.
-        save_grad: save gradient at every 1000 steps to self.grad.
-        save_theta: save θ at every 1000 steps to self.theta.
-        use_gpu: use GPU
-        gnd_data: (y, s) ground truth
-        iters_offline: if offline, number of repeats
-        hamming_thr: threshold for hamming distance (proportion of max abs).
-        """
+        Run the optimizer comparison routine.
+        Aware of online and offline training. Any optimizer with name ending with `_offline` will be trained with the
+        entire dataset. Otherwise, see GLMJaxSynthetic.
+        Results are saved in `self.ll`, `self.theta`, and `self.grad` in dict form for each optimizer.
 
-        if gnd_data:  # Ground truth exists. Pre-calculate hamming threshold.
-            gnd_for_hamming = np.abs(gnd_data['w']) > hamming_thr * np.max(np.abs(gnd_data['w'])).astype(np.int)
+        :param optimizers: a list of dict.
+        :param theta: dict of weights.
+        :param resume: do not start over if `run` has been called before.
+        :param save_grad: save gradient every _ steps. 0 implies no saving.
+        :param save_theta: save θ every _ steps. 0 implies no saving.
+        :param use_gpu: use GPU
+        :param gnd_data: (y, s) ground truth if available. Useful for hamming distance calculation.
+        :param iters_offline: if offline, number of repeats
+        :param hamming_thr: threshold for hamming distance (proportion of max abs of θ_w).
+        :param rpf: Number of runs per every `fit` call. Increases speed up to around 5.
+        """
 
         for opt in optimizers:
             offline = opt.get('offline', False)
 
             iters = self.total_M if not offline else iters_offline
             name = opt['name'] if not offline else f"{opt['name']}_offline"
-            n_checkpoints = int(iters / self.checkpoint)
+            n_checkpoints = int(iters / checkpoint)
 
             if resume and name in self.models:  # Continue training.
                 model: GLMJaxSynthetic = self.models[name]
@@ -111,8 +113,8 @@ class CompareOpt:
                 if save_theta and (i == 1 or i % save_theta == 0 or i == iters - 1):
                     self.theta[name].append(model.theta)
 
-                if i % self.checkpoint == 0 or i == iters - 1:
-                    idx = int(model.iter / self.checkpoint)
+                if i % checkpoint == 0 or i == iters - 1:
+                    idx = int(model.iter / checkpoint)
 
                     if gnd_data:
                         for j, name_θ in enumerate(self.names_θ):
@@ -123,7 +125,7 @@ class CompareOpt:
 
                     ll[idx] = model.fit(return_ll=True, indicator=indicator)
 
-                    if i > self.checkpoint and ll[idx] > 1e5:
+                    if i > checkpoint and ll[idx] > 1e5:
                         raise Exception(f'Blew up at {i}.')
 
                     if verbose and (i % verbose == 0 or i == iters - 1):
@@ -139,7 +141,8 @@ class CompareOpt:
 
         return self.ll
 
-    # def hyper_opt(self, name, space, n_calls=30, seed=0):  # Hyperparameter optimization. Seems unnecessary.
+    # TODO: Hyperparameter optimization with skopt. Causes dependency issues.
+    # def hyper_opt(self, name, space, n_calls=30, seed=0):
     #     func_run = self.run
     #
     #     @skopt.utils.use_named_args(space)
@@ -200,7 +203,7 @@ if __name__ == '__main__':
         {'name': 'rmsprop_momentum', 'step_size': 1e-3, 'offline': True},
     ]
 
-    gen = DataGenerator(params=params, params_θ=params_θ)
+    gen = DataGenerator(params=params, params_theta=params_θ)
 
     r, y, s = gen.gen_spikes(params=params, seed=0)
     c = CompareOpt(params, y, s)
