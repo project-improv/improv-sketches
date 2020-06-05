@@ -51,7 +51,7 @@ def regularization_path(r: np.ndarray):
     for i, v in enumerate(r):
         p = params.copy()
         p['λ1'] = v
-        print(f"{p['λ1']= }")
+        print(f"{p['λ1']}=")
         c = CompareOpt(p, y, s)
         c.run(optimizers, theta=gen_rand_theta(params), resume=True, gnd_data=gnd, use_gpu=True, save_theta=1000,
               save_grad=None, iters_offline=5000, indicator=indicator)

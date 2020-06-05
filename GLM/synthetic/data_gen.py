@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numba
 import seaborn as sns
+import numpy as np
 
 from GLM.utils import *
 

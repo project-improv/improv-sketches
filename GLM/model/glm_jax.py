@@ -334,9 +334,11 @@ if __name__ == '__main__':  # Test
     b = random.normal(key, shape=(N, 1)) * 0.001
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
-    model = GLMJax(p, theta)
+    model = GLMJax(p, theta, optimizer={'name': 'sgd', 'step_size': 1e-4})
 
     sN = 8  #
     data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
     stim = onp.random.randn(ds, 2)
     print(model.ll(data, stim))
+
+

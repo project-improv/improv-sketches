@@ -4,6 +4,8 @@ from typing import Dict, List
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+import numpy as np
+
 from jax.numpy import DeviceArray
 from numpy import ndarray
 from sklearn.metrics import mean_squared_error
@@ -160,7 +162,7 @@ class CompareOpt:
     def plot_opts(self, omit=3):
         fig, ax = plt.subplots(dpi=300)
         for i, (name, ll) in enumerate(self.ll.items()):
-            x = np.arange(len(ll))[omit:] * self.checkpoint
+            x = np.arange(len(ll))[omit:] * 100
             ax.plot(x, ll[omit:], label=f"{name}_stepsize: {self.optimizers[i]['step_size']}")
         ax.set_xlabel('Iteration')
         ax.set_ylabel('-log likelihood')
@@ -207,7 +209,7 @@ if __name__ == '__main__':
 
     r, y, s = gen.gen_spikes(params=params, seed=0)
     c = CompareOpt(params, y, s)
-    c.run(opts, theta=gen_rand_theta(params), gnd_data=gen.theta, use_gpu=True, save_theta=10000,
+    c.run(opts, theta=gen_rand_theta(params), gnd_data=gen.theta, use_gpu=False, save_theta=10000,
           iters_offline=10000, hamming_thr=0.1, verbose=True)
 
     c.plot_opts()
