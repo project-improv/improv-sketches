@@ -63,7 +63,7 @@ class GLMJax:
         else:
             assert theta['w'].shape == (p['N_lim'], p['N_lim'])
             assert theta['h'].shape == (p['N_lim'], p['dh'])
-            assert theta['k'].shape == (2, 1)
+            assert theta['k'].shape == (p['N_lim'], p['ds'])
             assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
 
             if len(theta['b'].shape) == 1:  # Array needs to be 2D.
@@ -143,8 +143,8 @@ class GLMJax:
         Indicator matrix discerns true zeros from padded ones.
         :return current_M, current_N, y, s, indicator
         """
-        #assert y.shape[1] == s.shape[1]
-        #assert s.shape[0] == self.params['ds']
+        assert y.shape[1] == s.shape[1]
+        assert s.shape[0] == self.params['ds']
 
         self.current_N, self.current_M = y.shape
 
@@ -191,7 +191,7 @@ class GLMJax:
 
         self._θ['h'] = onp.concatenate((self._θ['h'], onp.zeros((N_lim, self.params['dh']))), axis=0)
         self._θ['b'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
-        #self._θ['k'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
+        self._θ['k'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
 
         self.params['N_lim'] = 2 * N_lim
         self._θ = self.opt_init(self._θ)
@@ -208,9 +208,7 @@ class GLMJax:
         Return log rates from the model. That is, the linear part of the model.
         """
 
-        a= np.ones((p['N_lim'], 1))*θ["k"][0]
-        b= np.ones((p['N_lim'], p['M_lim']))*θ["k"][1]
-        cal_stim = a @ np.cos(s) + b
+        cal_stim = θ["k"] @ s
         cal_hist = GLMJax._convolve(p, y, θ["h"])
         cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
         # Necessary padding since history convolution shrinks M.
@@ -323,6 +321,7 @@ class GLMJaxSynthetic(GLMJax):
             self._θ = self._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter, *args)
             self.iter += 1
 
+
 def MSE(x, y):
 
     return (np.square(x - y)).mean(axis=None)
@@ -339,27 +338,26 @@ if __name__ == '__main__':  # Test
 
     w = random.normal(key, shape=(N, N)) * 0.001
     h = random.normal(key, shape=(N, dh)) * 0.001
-    k = random.normal(key, shape=(2, 1)) * 0.001
+    k = random.normal(key, shape=(N, ds)) * 0.001
     b = random.normal(key, shape=(N, 1)) * 0.001
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
-    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-4})
+    model = GLMJax(p, theta, optimizer={'name': 'sgd', 'step_size': 1e-4})
 
     y= onp.loadtxt('data_sample.txt')
-    s= onp.loadtxt('stim_info_sample.txt')
-    s= np.reshape(s, (2000, 1)).transpose()
+    s= onp.loadtxt('stim_sample.txt')
 
-    ll= np.zeros(1000)
+    ll= np.zeros(2000)
 
     indicator= None
 
-    for i in range(1000):
+    for i in range(2000):
         model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
 
         ll= jax.ops.index_update(ll, i, model.ll(y, s))
     
     plt.plot(ll)
-    plt.title('Single cos')
+    plt.title('linear fit to Single cos data')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()
@@ -392,11 +390,7 @@ if __name__ == '__main__':  # Test
     mse= MSE(r, r_ground)
 
     print('MSE loss= ' +str(mse))
-
-
     #sN = 8  #
     #data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
     #stim = onp.random.randn(ds, 2)
     #print(model.ll(data, stim))
-
-

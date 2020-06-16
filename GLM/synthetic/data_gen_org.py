@@ -179,7 +179,6 @@ class DataGenerator:
 
             stim_curr = (t // stim_int) % ds
             s[stim_curr, t] = 1.
-            sv[0, t] = stim_curr
 
             for i in range(N):  # step through neurons
                 # compute model firing rate
@@ -200,7 +199,7 @@ class DataGenerator:
                 else:
                     stim = k[i, stim_curr]
 
-                r[i, t] = f(b[i] + hist + weights + 2*np.cos(stim_curr)+1)
+                r[i, t] = f(b[i] + hist + weights + k)
 
                 # Clip. np.clip not supported in Numba.
                 above = (r[i, t] >= limit) * limit
