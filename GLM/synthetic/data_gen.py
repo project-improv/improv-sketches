@@ -125,13 +125,16 @@ class DataGenerator:
         N = self.params['N']
         ds = self.params['ds']
 
-        base = np.zeros((N, ds))
-        center = ds // 2
-        bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
-        chunk = N // ds
-        for n in range(ds):
-            base[n * chunk: np.clip((n + 1) * chunk, a_min=0, a_max=N), :] = np.roll(bell, n - center)
+        base = np.zeros((N, 2))
 
+        base[:,0]= np.random.rand(N)/10
+        base[:,1]= np.random.rand(N)*(2*np.pi)
+
+        #center = ds // 2
+        #bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
+        #chunk = N // ds
+        #for n in range(ds):
+        #    base[n * chunk: np.clip((n + 1) * chunk, a_min=0, a_max=N), :] = np.roll(bell, n - center)
         return base
 
     def gen_spikes(self, params=None, **kwargs):
@@ -196,11 +199,13 @@ class DataGenerator:
                     weights = np.dot(w[i, :], y[:, t - 1])
 
                 if t == 0:
-                    stim = 0
-                else:
-                    stim = k[i, stim_curr]
+                    stim =np.zeros(2) 
 
-                r[i, t] = f(b[i] + hist + weights + 2*np.cos(stim_curr)+1)
+                else:
+                    stim = k[i, :]
+
+
+                r[i, t] = f(b[i] + hist + weights + stim[0]*np.cos(stim_curr*(np.pi/4)+stim[1]))
 
                 # Clip. np.clip not supported in Numba.
                 above = (r[i, t] >= limit) * limit
@@ -221,10 +226,10 @@ class DataGenerator:
 
 
 if __name__ == '__main__':
-    n = 80
+    n = 10
     dh = 2
     ds = 8
-    m = 2000
+    m = 200
     dt = 1.
 
     p = {
@@ -247,7 +252,7 @@ if __name__ == '__main__':
     gen = DataGenerator(params=p, params_theta=params_θ)
 
     # %% Plot θ_w
-    fig, ax = plt.subplots(dpi=300)
+    fig, ax = plt.subplots(dpi=100)
     plot_redblue(ax, gen.theta['w'], fig=fig)
     plt.show()
     print(np.sum(gen.theta['w'] != 0) / gen.theta['w'].size)
@@ -261,6 +266,13 @@ if __name__ == '__main__':
 
     # %% Generate data
     r, y, s, sv = gen.gen_spikes(seed=0)
+
+    print(gen.theta['b'])
+    print(gen.theta['w'])
+    print(gen.theta['h'])
+
+    print('log_likelihood= '+str((np.sum(r)-np.sum(y*np.log(r)))/(m*n**2)))
+
     data = {'y': y.astype(np.uint8), 'r': r, 's':s}
     print('Spike Counts:')
     print('mean: ', np.mean(data['y']))
@@ -276,7 +288,7 @@ if __name__ == '__main__':
     np.savetxt('stim_sample.txt', data['s'])
     np.savetxt('stim_info_sample.txt', sv)
 
-    fig, ax = plt.subplots(dpi=300)
+    fig, ax = plt.subplots(dpi=100)
     u = ax.imshow(r[:, :p['N'] * 4])
     ax.grid(0)
     fig.colorbar(u)

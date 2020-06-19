@@ -12,6 +12,7 @@ from jax.config import config
 from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 import matplotlib.pyplot as plt
+import pickle
 
 try:  # kernprof
     profile
@@ -342,22 +343,47 @@ if __name__ == '__main__':  # Test
     b = random.normal(key, shape=(N, 1)) * 0.001
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
-    model = GLMJax(p, theta, optimizer={'name': 'sgd', 'step_size': 1e-4})
+    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
 
     y= onp.loadtxt('data_sample.txt')
     s= onp.loadtxt('stim_sample.txt')
 
-    ll= np.zeros(2000)
+    ll= np.zeros(4000)
+
+    MSEk= np.zeros(4000)
+    MSEb= np.zeros(4000)
+    MSEw= np.zeros(4000)
+    MSEh= np.zeros(4000)
 
     indicator= None
 
-    for i in range(2000):
+    with open('theta_dict.pickle', 'rb') as f:
+        ground_theta= pickle.load(f)
+
+
+    for i in range(4000):
         model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
 
+        MSEk= jax.ops.index_update(MSEk, i, MSE(model.theta['k'], ground_theta['k']))
+        MSEb= jax.ops.index_update(MSEb, i, MSE(model.theta['b'], ground_theta['b']))
+        MSEw= jax.ops.index_update(MSEw, i, MSE(model.theta['w'], ground_theta['w']))
+        MSEh= jax.ops.index_update(MSEh, i, MSE(model.theta['h'], ground_theta['h']))
         ll= jax.ops.index_update(ll, i, model.ll(y, s))
+
+    fig, axs= plt.subplots(2, 2)
+    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
+    axs[0][0].plot(MSEk)
+    axs[0][0].set_title('MSEk')
+    axs[0][1].plot(MSEb)
+    axs[0][1].set_title('MSEb')
+    axs[1][0].plot(MSEw)
+    axs[1][0].set_title('MSEw')
+    axs[1][1].plot(MSEh)
+    axs[1][1].set_title('MSEh')
+    plt.show()
     
     plt.plot(ll)
-    plt.title('linear fit to Single cos data')
+    plt.title('linear fit to linear data, adam, lr=1e-3')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()
@@ -375,14 +401,14 @@ if __name__ == '__main__':  # Test
     r *= indicator
     
     fig, (ax1, ax2) = plt.subplots(2)
-    u1 = ax1.imshow(r[:, :p['N'] * 4])
+    u1 = ax1.imshow(r[:, :])
     ax1.grid(0)
-    u2 = ax2.imshow(r[:, :p['N'] * 4])
+    u2 = ax2.imshow(r[:, :])
     ax2.grid(0)
     fig.colorbar(u1)
     fig.colorbar(u2)
-    ax1.set_title('Ground truth, single cos')
-    ax2.set_title('Model fit, single cos')
+    ax1.set_title('Ground truth, linear')
+    ax2.set_title('Model fit, linear')
     plt.show()
     
     onp.savetxt('rates_model.txt', r)

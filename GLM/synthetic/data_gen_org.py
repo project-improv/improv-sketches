@@ -167,7 +167,6 @@ class DataGenerator:
         r = np.zeros((N, M))  # rates
         y = np.zeros((N, M))  # spikes
         s = np.zeros((ds, M))
-        sv= np.zeros((1, M))
 
         # the initial rate (no history); generate randomly
         init = np.random.randn(N) * 0.1 - 1
@@ -199,7 +198,7 @@ class DataGenerator:
                 else:
                     stim = k[i, stim_curr]
 
-                r[i, t] = f(b[i] + hist + weights + k)
+                r[i, t] = f(b[i] + hist + weights + stim)
 
                 # Clip. np.clip not supported in Numba.
                 above = (r[i, t] >= limit) * limit
@@ -208,7 +207,7 @@ class DataGenerator:
 
                 y[i, t] = np.random.poisson(r[i, t] * dt)
 
-        return r, y, s, sv
+        return r, y, s
 
     def plot_theta(self, name):
         scale = np.max(np.abs(self.theta[name]))
@@ -246,7 +245,7 @@ if __name__ == '__main__':
     gen = DataGenerator(params=p, params_theta=params_θ)
 
     # %% Plot θ_w
-    fig, ax = plt.subplots(dpi=300)
+    fig, ax = plt.subplots(dpi=100)
     plot_redblue(ax, gen.theta['w'], fig=fig)
     plt.show()
     print(np.sum(gen.theta['w'] != 0) / gen.theta['w'].size)
@@ -259,8 +258,8 @@ if __name__ == '__main__':
     print('Simulating model...')
 
     # %% Generate data
-    r, y, s, sv = gen.gen_spikes(seed=0)
-    data = {'y': y.astype(np.uint8), 'r': r, 's':s}
+    r, y, s = gen.gen_spikes(seed=0)
+    data = {'y': y.astype(np.uint8), 'r': r}
     print('Spike Counts:')
     print('mean: ', np.mean(data['y']))
     print('var.: ', np.var(data['y']), '\n')
@@ -272,10 +271,9 @@ if __name__ == '__main__':
     print('Saving data.')
     np.savetxt('data_sample.txt', data['y'])
     np.savetxt('rates_sample.txt', data['r'])
-    np.savetxt('stim_sample.txt', data['s'])
-    np.savetxt('stim_info_sample.txt', sv)
+    np.savetxt('stim_sample.txt', s)
 
-    fig, ax = plt.subplots(dpi=300)
+    fig, ax = plt.subplots(dpi=100)
     u = ax.imshow(r[:, :p['N'] * 4])
     ax.grid(0)
     fig.colorbar(u)

@@ -12,6 +12,7 @@ from jax.config import config
 from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 import matplotlib.pyplot as plt
+import pickle
 
 try:  # kernprof
     profile
@@ -63,7 +64,7 @@ class GLMJax:
         else:
             assert theta['w'].shape == (p['N_lim'], p['N_lim'])
             assert theta['h'].shape == (p['N_lim'], p['dh'])
-            assert theta['k'].shape == (2, 1)
+            assert theta['k'].shape == (p['N_lim'], 2)
             assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
 
             if len(theta['b'].shape) == 1:  # Array needs to be 2D.
@@ -208,9 +209,12 @@ class GLMJax:
         Return log rates from the model. That is, the linear part of the model.
         """
 
-        a= np.ones((p['N_lim'], 1))*θ["k"][0]
-        b= np.ones((p['N_lim'], p['M_lim']))*θ["k"][1]
-        cal_stim = a @ np.cos(s) + b
+        a= np.reshape(θ["k"][:,0], (p['N_lim'],1))
+        b= np.reshape(θ["k"][:,1], (p['N_lim'],1))
+
+        A= a @ np.ones((1, p['N_lim'])) 
+        B= b @ np.ones((1, p['M_lim']))
+        cal_stim = A @ np.cos(s*(np.pi/4)+B)
         cal_hist = GLMJax._convolve(p, y, θ["h"])
         cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
         # Necessary padding since history convolution shrinks M.
@@ -331,35 +335,62 @@ def MSE(x, y):
 if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
 
-    N = 80
-    M = 2000
+    N = 10
+    M = 200
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 1, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1':4, 'λ2':0.0}
 
     w = random.normal(key, shape=(N, N)) * 0.001
     h = random.normal(key, shape=(N, dh)) * 0.001
-    k = random.normal(key, shape=(2, 1)) * 0.001
+    k = np.zeros((N,2))
+    k= jax.ops.index_update(k, jax.ops.index[:, 0], onp.random.rand(N)/10)
+    k= jax.ops.index_update(k, jax.ops.index[:, 1], onp.random.rand(N)*(2*np.pi))
     b = random.normal(key, shape=(N, 1)) * 0.001
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
-    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-4})
+    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
 
     y= onp.loadtxt('data_sample.txt')
     s= onp.loadtxt('stim_info_sample.txt')
-    s= np.reshape(s, (2000, 1)).transpose()
+    s= np.reshape(s, (200, 1)).transpose()
 
-    ll= np.zeros(1000)
+    ll= np.zeros(4000)
+
+    MSEk= np.zeros(4000)
+    MSEb= np.zeros(4000)
+    MSEw= np.zeros(4000)
+    MSEh= np.zeros(4000)
 
     indicator= None
 
-    for i in range(1000):
+    with open('theta_dict.pickle', 'rb') as f:
+        ground_theta= pickle.load(f)
+
+
+    for i in range(4000):
         model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
 
+        MSEk= jax.ops.index_update(MSEk, i, MSE(model.theta['k'], ground_theta['k']))
+        MSEb= jax.ops.index_update(MSEb, i, MSE(model.theta['b'], ground_theta['b']))
+        MSEw= jax.ops.index_update(MSEw, i, MSE(model.theta['w'], ground_theta['w']))
+        MSEh= jax.ops.index_update(MSEh, i, MSE(model.theta['h'], ground_theta['h']))
         ll= jax.ops.index_update(ll, i, model.ll(y, s))
+
+    fig, axs= plt.subplots(2, 2)
+    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-4', fontsize=12)
+    axs[0][0].plot(MSEk)
+    axs[0][0].set_title('MSEk')
+    axs[0][1].plot(MSEb)
+    axs[0][1].set_title('MSEb')
+    axs[1][0].plot(MSEw)
+    axs[1][0].set_title('MSEw')
+    axs[1][1].plot(MSEh)
+    axs[1][1].set_title('MSEh')
+    plt.show()
     
     plt.plot(ll)
-    plt.title('Single cos')
+    plt.title('Single cos, lr=1e-4, adam')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()
@@ -375,14 +406,22 @@ if __name__ == '__main__':  # Test
     log_r *= indicator
     r= np.exp(log_r)
     r *= indicator
+
+    print(model.theta['k'])
+    print(model.theta['b'])
+    print(model.theta['w'])
+    print(model.theta['h'])
     
     fig, (ax1, ax2) = plt.subplots(2)
-    u1 = ax1.imshow(r[:, :p['N'] * 4])
+    u1 = ax1.imshow(r[:,:])
     ax1.grid(0)
-    u2 = ax2.imshow(r[:, :p['N'] * 4])
+    u2 = ax2.imshow(r_ground[:,:])
     ax2.grid(0)
     fig.colorbar(u1)
-    fig.colorbar(u2)
+    ax1.set_xlabel('time steps')
+    ax2.set_xlabel('time steps')
+    ax1.set_ylabel('neurons')
+    ax2.set_ylabel('neurons')
     ax1.set_title('Ground truth, single cos')
     ax2.set_title('Model fit, single cos')
     plt.show()
