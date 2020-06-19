@@ -125,10 +125,11 @@ class DataGenerator:
         N = self.params['N']
         ds = self.params['ds']
 
-        base = np.zeros((N, 2))
+        base = np.zeros((N, 3))
 
-        base[:,0]= np.random.rand(N)/10
-        base[:,1]= np.random.rand(N)*(2*np.pi)
+        base[:,0]= np.random.rand(N)
+        base[:,1]= np.random.rand(N)
+        base[:,2]= np.random.rand(N)
 
         #center = ds // 2
         #bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
@@ -199,13 +200,13 @@ class DataGenerator:
                     weights = np.dot(w[i, :], y[:, t - 1])
 
                 if t == 0:
-                    stim =np.zeros(2) 
+                    stim =np.zeros(3) 
 
                 else:
                     stim = k[i, :]
 
 
-                r[i, t] = f(b[i] + hist + weights + stim[0]*np.cos(stim_curr*(np.pi/4)+stim[1]))
+                r[i, t] = f(b[i] + hist + weights + stim[0]*np.exp(-np.square(stim_curr*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2)))
 
                 # Clip. np.clip not supported in Numba.
                 above = (r[i, t] >= limit) * limit

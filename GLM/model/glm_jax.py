@@ -64,7 +64,7 @@ class GLMJax:
         else:
             assert theta['w'].shape == (p['N_lim'], p['N_lim'])
             assert theta['h'].shape == (p['N_lim'], p['dh'])
-            assert theta['k'].shape == (p['N_lim'], 2)
+            assert theta['k'].shape == (p['N_lim'], 3)
             assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
 
             if len(theta['b'].shape) == 1:  # Array needs to be 2D.
@@ -211,10 +211,12 @@ class GLMJax:
 
         a= np.reshape(θ["k"][:,0], (p['N_lim'],1))
         b= np.reshape(θ["k"][:,1], (p['N_lim'],1))
+        c= np.reshape(θ["k"][:,2], (p['N_lim'],1))
 
         A= a @ np.ones((1, p['N_lim'])) 
         B= b @ np.ones((1, p['M_lim']))
-        cal_stim = A @ np.cos(s*(np.pi/4)+B)
+        C= c @ np.ones((1, p['M_lim']))
+        cal_stim = A @ np.exp(-np.divide(np.square(s*(np.pi/4)-B), 2*(C+0.001)**2))
         cal_hist = GLMJax._convolve(p, y, θ["h"])
         cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
         # Necessary padding since history convolution shrinks M.
@@ -343,9 +345,10 @@ if __name__ == '__main__':  # Test
 
     w = random.normal(key, shape=(N, N)) * 0.001
     h = random.normal(key, shape=(N, dh)) * 0.001
-    k = np.zeros((N,2))
-    k= jax.ops.index_update(k, jax.ops.index[:, 0], onp.random.rand(N)/10)
-    k= jax.ops.index_update(k, jax.ops.index[:, 1], onp.random.rand(N)*(2*np.pi))
+    k = np.zeros((N,3))
+    k= jax.ops.index_update(k, jax.ops.index[:, 0], onp.random.rand(N))
+    k= jax.ops.index_update(k, jax.ops.index[:, 1], onp.random.rand(N))
+    k= jax.ops.index_update(k, jax.ops.index[:, 2], onp.random.rand(N))
     b = random.normal(key, shape=(N, 1)) * 0.001
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
@@ -378,7 +381,7 @@ if __name__ == '__main__':  # Test
         ll= jax.ops.index_update(ll, i, model.ll(y, s))
 
     fig, axs= plt.subplots(2, 2)
-    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-4', fontsize=12)
+    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
     axs[0][0].plot(MSEk)
     axs[0][0].set_title('MSEk')
     axs[0][1].plot(MSEb)
@@ -390,7 +393,7 @@ if __name__ == '__main__':  # Test
     plt.show()
     
     plt.plot(ll)
-    plt.title('Single cos, lr=1e-4, adam')
+    plt.title('Guassian fit, lr=1e-3, adam')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()
