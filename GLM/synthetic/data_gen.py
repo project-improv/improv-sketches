@@ -125,7 +125,7 @@ class DataGenerator:
         N = self.params['N']
         ds = self.params['ds']
 
-        base = np.zeros((N, 3))
+        base = np.zeros((N, 6))
 
         base[:,0]= np.random.rand(N)
         base[:,1]= np.random.rand(N)
@@ -150,7 +150,7 @@ class DataGenerator:
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=20., stim_int=50):
+    def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=20., stim_int=10):
         '''
         Generates spike counts from the model
 
@@ -171,7 +171,9 @@ class DataGenerator:
         r = np.zeros((N, M))  # rates
         y = np.zeros((N, M))  # spikes
         s = np.zeros((ds, M))
-        sv= np.zeros((1, M))
+        sv= np.zeros(M)
+
+        t= np.random.rand(3)
 
         # the initial rate (no history); generate randomly
         init = np.random.randn(N) * 0.1 - 1
@@ -181,9 +183,9 @@ class DataGenerator:
         # simulate the model for next M samples (time steps)
         for t in range(M):  # step through time
 
-            stim_curr = (t // stim_int) % ds
+            stim_curr = (t//stim_int) %ds
             s[stim_curr, t] = 1.
-            sv[0, t] = stim_curr
+            sv[t] = stim_curr
 
             for i in range(N):  # step through neurons
                 # compute model firing rate
@@ -199,14 +201,19 @@ class DataGenerator:
                 else:
                     weights = np.dot(w[i, :], y[:, t - 1])
 
-                if t == 0:
-                    stim =np.zeros(3) 
+                if t in [0, 1, 2, 3, 4]:
+                    stim= k[i, :]
+                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(0, m)])
+                    gauss= stim[0]*np.exp(-np.square(sv[0:m]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
 
                 else:
                     stim = k[i, :]
+                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(m-5, m)])
+                    gauss= stim[0]*np.exp(-np.square(sv[m-5:m]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
 
+                stim_fin= np.sum(np.multiply(ex, gauss))
 
-                r[i, t] = f(b[i] + hist + weights + stim[0]*np.exp(-np.square(stim_curr*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2)))
+                r[i, t] = f(b[i] + hist + weights + stim_fin)
 
                 # Clip. np.clip not supported in Numba.
                 above = (r[i, t] >= limit) * limit
@@ -230,7 +237,7 @@ if __name__ == '__main__':
     n = 10
     dh = 2
     ds = 8
-    m = 200
+    m = 50
     dt = 1.
 
     p = {

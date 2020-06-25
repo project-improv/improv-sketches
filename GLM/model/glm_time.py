@@ -64,7 +64,7 @@ class GLMJax:
         else:
             assert theta['w'].shape == (p['N_lim'], p['N_lim'])
             assert theta['h'].shape == (p['N_lim'], p['dh'])
-            assert theta['k'].shape == (p['N_lim'], p['ds'])
+            assert theta['k'].shape == (p['N_lim'], 6)
             assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
 
             if len(theta['b'].shape) == 1:  # Array needs to be 2D.
@@ -144,8 +144,6 @@ class GLMJax:
         Indicator matrix discerns true zeros from padded ones.
         :return current_M, current_N, y, s, indicator
         """
-        assert y.shape[1] == s.shape[1]
-        assert s.shape[0] == self.params['ds']
 
         self.current_N, self.current_M = y.shape
 
@@ -161,11 +159,11 @@ class GLMJax:
 
         if y.shape != (N_lim, M_lim):
             y_ = onp.zeros((N_lim, M_lim), dtype=onp.float32)
-            s_ = onp.zeros((8, M_lim), dtype=onp.float32)
+            s_ = onp.zeros((M_lim), dtype=onp.float32)
             indicator_ = onp.zeros((N_lim, M_lim), dtype=onp.float32)
 
             y_[:y.shape[0], :y.shape[1]] = y
-            s_[:s.shape[0], :s.shape[1]] = s
+            s_[:s.shape[0]] = s
 
             if indicator is not None:
                 indicator_[:y.shape[0], :y.shape[1]] = indicator
@@ -192,7 +190,7 @@ class GLMJax:
 
         self._θ['h'] = onp.concatenate((self._θ['h'], onp.zeros((N_lim, self.params['dh']))), axis=0)
         self._θ['b'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
-        self._θ['k'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
+        #self._θ['k'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
 
         self.params['N_lim'] = 2 * N_lim
         self._θ = self.opt_init(self._θ)
@@ -209,7 +207,34 @@ class GLMJax:
         Return log rates from the model. That is, the linear part of the model.
         """
 
-        cal_stim = θ["k"] @ s
+        a= np.reshape(θ["k"][:,0], (p['N_lim'],1))
+        b= np.reshape(θ["k"][:,1], (p['N_lim'],1))
+        c= np.reshape(θ["k"][:,2], (p['N_lim'],1))
+
+        cal_stim= np.zeros((p['N_lim'],p['M_lim']))
+
+        for n in range(p['N_lim']):
+            print(n)
+            
+            gauss= a[n] * np.exp(-(np.square(s*(np.pi/4)-b[n])/ (2*(c[n]+0.001)**2)))
+
+            for m in range(p['M_lim']):
+                
+                ex= np.zeros(p['M_lim'])
+                ex=jax.ops.index_update(ex, jax.ops.index[0:m], [np.exp(-np.abs(i-m)) for i in range(m)])
+
+                cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss, ex)))
+                '''
+                if m in [0, 1, 2, 3, 4]:
+                    ex= np.zeros(m)
+                    ex= jax.ops.index_update(ex, jax.ops.index[0:m], [np.exp(-np.abs(i-m)) for i in range(m)])
+                    cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss[0:m], ex)))
+
+                else: 
+                    ex= np.zeros(5)
+                    ex= jax.ops.index_update(ex, jax.ops.index[0:5], [np.exp(-np.abs(i-m)) for i in range(m-5, m)])
+                    cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss[m-5:m], ex)))
+                '''
         cal_hist = GLMJax._convolve(p, y, θ["h"])
         cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
         # Necessary padding since history convolution shrinks M.
@@ -322,7 +347,6 @@ class GLMJaxSynthetic(GLMJax):
             self._θ = self._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter, *args)
             self.iter += 1
 
-
 def MSE(x, y):
 
     return (np.square(x - y)).mean(axis=None)
@@ -332,24 +356,30 @@ if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
 
     N = 10
-    M = 200
+    M = 50
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 1, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1':4, 'λ2':0.0}
 
     w = random.normal(key, shape=(N, N)) * 0.001
     h = random.normal(key, shape=(N, dh)) * 0.001
-    k = random.normal(key, shape=(N, ds)) * 0.001
+    k = np.zeros((N,6))
+    k= jax.ops.index_update(k, jax.ops.index[:, 0], onp.random.rand(N))
+    k= jax.ops.index_update(k, jax.ops.index[:, 1], onp.random.rand(N))
+    k= jax.ops.index_update(k, jax.ops.index[:, 2], onp.random.rand(N))
+    t= onp.random.rand(1)
     b = random.normal(key, shape=(N, 1)) * 0.001
+    
 
     theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
     model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
 
     y= onp.loadtxt('data_sample.txt')
-    s= onp.loadtxt('stim_sample.txt')
+    s= onp.loadtxt('stim_info_sample.txt')
 
     ll= np.zeros(4000)
 
+    MSEk= np.zeros(4000)
     MSEb= np.zeros(4000)
     MSEw= np.zeros(4000)
     MSEh= np.zeros(4000)
@@ -361,15 +391,23 @@ if __name__ == '__main__':  # Test
 
 
     for i in range(4000):
+        print(i)
         model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
+        print('fit')
 
+        MSEk= jax.ops.index_update(MSEk, i, MSE(model.theta['k'], ground_theta['k']))
         MSEb= jax.ops.index_update(MSEb, i, MSE(model.theta['b'], ground_theta['b']))
         MSEw= jax.ops.index_update(MSEw, i, MSE(model.theta['w'], ground_theta['w']))
         MSEh= jax.ops.index_update(MSEh, i, MSE(model.theta['h'], ground_theta['h']))
+
         ll= jax.ops.index_update(ll, i, model.ll(y, s))
+
+        print(i)
 
     fig, axs= plt.subplots(2, 2)
     fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
+    axs[0][0].plot(MSEk)
+    axs[0][0].set_title('MSEk')
     axs[0][1].plot(MSEb)
     axs[0][1].set_title('MSEb')
     axs[1][0].plot(MSEw)
@@ -379,7 +417,7 @@ if __name__ == '__main__':  # Test
     plt.show()
     
     plt.plot(ll)
-    plt.title('linear fit to linear data, adam, lr=1e-3')
+    plt.title('Guassian fit with exp decay, lr=1e-4, adam')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()
@@ -395,16 +433,24 @@ if __name__ == '__main__':  # Test
     log_r *= indicator
     r= np.exp(log_r)
     r *= indicator
+
+    print(model.theta['k'])
+    print(model.theta['b'])
+    print(model.theta['w'])
+    print(model.theta['h'])
     
     fig, (ax1, ax2) = plt.subplots(2)
-    u1 = ax1.imshow(r[:, :])
+    u1 = ax1.imshow(r[:,:])
     ax1.grid(0)
-    u2 = ax2.imshow(r[:, :])
+    u2 = ax2.imshow(r_ground[:,:])
     ax2.grid(0)
     fig.colorbar(u1)
-    fig.colorbar(u2)
-    ax1.set_title('Ground truth, linear')
-    ax2.set_title('Model fit, linear')
+    ax1.set_xlabel('time steps')
+    ax2.set_xlabel('time steps')
+    ax1.set_ylabel('neurons')
+    ax2.set_ylabel('neurons')
+    ax1.set_title('Model fit, Guassian with temporal decay')
+    ax2.set_title('Ground truth, Gaussian with temporal decay')
     plt.show()
     
     onp.savetxt('rates_model.txt', r)
@@ -412,7 +458,11 @@ if __name__ == '__main__':  # Test
     mse= MSE(r, r_ground)
 
     print('MSE loss= ' +str(mse))
+
+
     #sN = 8  #
     #data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
     #stim = onp.random.randn(ds, 2)
     #print(model.ll(data, stim))
+
+
