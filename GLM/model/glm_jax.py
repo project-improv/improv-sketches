@@ -393,7 +393,7 @@ if __name__ == '__main__':  # Test
     plt.show()
     
     plt.plot(ll)
-    plt.title('Guassian fit, lr=1e-3, adam')
+    plt.title('Single cos, lr=1e-4, adam')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()

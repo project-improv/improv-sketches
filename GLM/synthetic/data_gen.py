@@ -109,6 +109,8 @@ class DataGenerator:
 
         theta['k'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
 
+        theta['t']= np.random.rand(3)
+
         return theta
 
     def gen_theta_k(self, r=0.5, sd=1):
@@ -125,7 +127,7 @@ class DataGenerator:
         N = self.params['N']
         ds = self.params['ds']
 
-        base = np.zeros((N, 6))
+        base = np.zeros((N, 3))
 
         base[:,0]= np.random.rand(N)
         base[:,1]= np.random.rand(N)
@@ -145,12 +147,12 @@ class DataGenerator:
         p = self.params.copy() if params is None else params.copy()
         if 'ds' not in p:
             p['ds'] = 1
-        return self._gen_spikes(self.theta['w'], self.theta['h'], self.theta['b'], self.theta['k'],
+        return self._gen_spikes(self.theta['w'], self.theta['h'], self.theta['b'], self.theta['k'], self.theta['t'],
                                 p['dt'], p['dh'], p['ds'], p['N'], p['M'], **kwargs)
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(w, h, b, k, dt, dh, ds, N, M, seed=2, limit=20., stim_int=10):
+    def _gen_spikes(w, h, b, k, t, dt, dh, ds, N, M, seed=2, limit=20., stim_int=10):
         '''
         Generates spike counts from the model
 
@@ -173,54 +175,54 @@ class DataGenerator:
         s = np.zeros((ds, M))
         sv= np.zeros(M)
 
-        t= np.random.rand(3)
-
         # the initial rate (no history); generate randomly
         init = np.random.randn(N) * 0.1 - 1
         r[:, 0] = f(init[0])
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
 
         # simulate the model for next M samples (time steps)
-        for t in range(M):  # step through time
+        for m in range(M):  # step through time
 
-            stim_curr = (t//stim_int) %ds
-            s[stim_curr, t] = 1.
-            sv[t] = stim_curr
+            stim_curr = (m//stim_int) %ds
+            s[stim_curr, m] = 1.
+            sv[m] = stim_curr
 
             for i in range(N):  # step through neurons
                 # compute model firing rate
-                if t == 0:
+                if m == 0:
                     hist = 0
-                elif t < dh:
-                    hist = np.sum(h[i, :t] * y[i, :t])
+                elif m < dh:
+                    hist = np.sum(h[i, :m] * y[i, :m])
                 else:
-                    hist = np.sum(h[i, :] * y[i, t - dh:t])
+                    hist = np.sum(h[i, :] * y[i, m - dh:m])
 
-                if t == 0:
+                if m == 0:
                     weights = 0
                 else:
-                    weights = np.dot(w[i, :], y[:, t - 1])
+                    weights = np.dot(w[i, :], y[:, m - 1])
 
-                if t in [0, 1, 2, 3, 4]:
+                if m in [0, 1, 2, 3, 4]:
                     stim= k[i, :]
-                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(0, m)])
-                    gauss= stim[0]*np.exp(-np.square(sv[0:m]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
+                    #ex= np.asarray([np.exp(-np.abs(i-m)) for i in range(0,m)])
+                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(0, m+1)])
+                    gauss= stim[0]*np.exp(-np.square(sv[0:m+1]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
 
                 else:
                     stim = k[i, :]
-                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(m-5, m)])
-                    gauss= stim[0]*np.exp(-np.square(sv[m-5:m]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
+                    #ex= np.asarray([np.exp(-np.abs(i-m)) for i in range(m-5,m)])
+                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(m-4, m+1)])
+                    gauss= stim[0]*np.exp(-np.square(sv[m-4:m+1]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
 
                 stim_fin= np.sum(np.multiply(ex, gauss))
 
-                r[i, t] = f(b[i] + hist + weights + stim_fin)
+                r[i, m] = f(b[i] + hist + weights + stim_fin)
 
                 # Clip. np.clip not supported in Numba.
-                above = (r[i, t] >= limit) * limit
-                below = (r[i, t] < limit)
-                r[i, t] = r[i, t] * below + above
+                above = (r[i, m] >= limit) * limit
+                below = (r[i, m] < limit)
+                r[i, m] = r[i, m] * below + above
 
-                y[i, t] = np.random.poisson(r[i, t] * dt)
+                y[i, m] = np.random.poisson(r[i, m] * dt)
 
         return r, y, s, sv
 

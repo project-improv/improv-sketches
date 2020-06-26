@@ -13,6 +13,7 @@ from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 import matplotlib.pyplot as plt
 import pickle
+import time
 
 try:  # kernprof
     profile
@@ -64,7 +65,7 @@ class GLMJax:
         else:
             assert theta['w'].shape == (p['N_lim'], p['N_lim'])
             assert theta['h'].shape == (p['N_lim'], p['dh'])
-            assert theta['k'].shape == (p['N_lim'], 6)
+            assert theta['k'].shape == (p['N_lim'], 3)
             assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
 
             if len(theta['b'].shape) == 1:  # Array needs to be 2D.
@@ -104,6 +105,7 @@ class GLMJax:
             self._θ = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
                                              self.iter, *self._check_arrays(y, s, indicator))
             self.iter += 1
+
 
     @staticmethod
     @partial(jit, static_argnums=(1, 2, 3))
@@ -211,20 +213,46 @@ class GLMJax:
         b= np.reshape(θ["k"][:,1], (p['N_lim'],1))
         c= np.reshape(θ["k"][:,2], (p['N_lim'],1))
 
+        A= a @ np.ones((1, p['N_lim'])) 
+        B= b @ np.ones((1, p['M_lim']))
+        C= c @ np.ones((1, p['M_lim']))
+
+        t= θ["t"]
+
+        gauss= A @ np.exp(-np.divide(np.square(s*(np.pi/4)-B), 2*(C+0.001)**2))
+
         cal_stim= np.zeros((p['N_lim'],p['M_lim']))
 
+        for m in range(p['M_lim']):
+            
+            if m in [0, 1, 2, 3, 4]:
+                ex= np.zeros((1,m+1))
+                ex= jax.ops.index_update(ex, jax.ops.index[:, 0:m+1], [[t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.01)**2)) for i in range(m+1)]])
+                mult= np.multiply(gauss[:,0:m+1], ex)
+                sm= mult @ np.ones((m+1,1))
+                cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[:,0:m+1], sm)
+
+            else:
+                ex= np.zeros((1,5))
+                ex= jax.ops.index_update(ex, jax.ops.index[:, 0:5], [[t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.01)**2)) for i in range(m-4, m+1)]])
+                mult= np.multiply(gauss[:,m-4:m+1], ex)
+                sm= mult @ np.ones((5,1))
+                cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[:, m-4:m+1], sm)
+
+        '''
+
         for n in range(p['N_lim']):
-            print(n)
             
             gauss= a[n] * np.exp(-(np.square(s*(np.pi/4)-b[n])/ (2*(c[n]+0.001)**2)))
+            gauss1= 0.3 * np.exp(-(np.square(s*(np.pi/4)-np.pi)/ (2*(0.1+0.001)**2)))
 
             for m in range(p['M_lim']):
                 
                 ex= np.zeros(p['M_lim'])
                 ex=jax.ops.index_update(ex, jax.ops.index[0:m], [np.exp(-np.abs(i-m)) for i in range(m)])
 
-                cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss, ex)))
-                '''
+                cal= jax.ops.index_update(cal, jax.ops.index[n,m], np.sum(np.multiply(gauss1, ex)))
+                
                 if m in [0, 1, 2, 3, 4]:
                     ex= np.zeros(m)
                     ex= jax.ops.index_update(ex, jax.ops.index[0:m], [np.exp(-np.abs(i-m)) for i in range(m)])
@@ -234,7 +262,8 @@ class GLMJax:
                     ex= np.zeros(5)
                     ex= jax.ops.index_update(ex, jax.ops.index[0:5], [np.exp(-np.abs(i-m)) for i in range(m-5, m)])
                     cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss[m-5:m], ex)))
-                '''
+        '''   
+
         cal_hist = GLMJax._convolve(p, y, θ["h"])
         cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
         # Necessary padding since history convolution shrinks M.
@@ -363,19 +392,20 @@ if __name__ == '__main__':  # Test
 
     w = random.normal(key, shape=(N, N)) * 0.001
     h = random.normal(key, shape=(N, dh)) * 0.001
-    k = np.zeros((N,6))
+    k = np.zeros((N,3))
     k= jax.ops.index_update(k, jax.ops.index[:, 0], onp.random.rand(N))
     k= jax.ops.index_update(k, jax.ops.index[:, 1], onp.random.rand(N))
     k= jax.ops.index_update(k, jax.ops.index[:, 2], onp.random.rand(N))
-    t= onp.random.rand(1)
+    t= onp.random.rand(3)
     b = random.normal(key, shape=(N, 1)) * 0.001
     
 
-    theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k}
+    theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k, 't': t}
     model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
 
     y= onp.loadtxt('data_sample.txt')
     s= onp.loadtxt('stim_info_sample.txt')
+    s= np.reshape(s, (50,1)).transpose()
 
     ll= np.zeros(4000)
 
@@ -383,6 +413,7 @@ if __name__ == '__main__':  # Test
     MSEb= np.zeros(4000)
     MSEw= np.zeros(4000)
     MSEh= np.zeros(4000)
+    MSEt= np.zeros(4000)
 
     indicator= None
 
@@ -391,20 +422,18 @@ if __name__ == '__main__':  # Test
 
 
     for i in range(4000):
-        print(i)
         model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
-        print('fit')
 
         MSEk= jax.ops.index_update(MSEk, i, MSE(model.theta['k'], ground_theta['k']))
         MSEb= jax.ops.index_update(MSEb, i, MSE(model.theta['b'], ground_theta['b']))
         MSEw= jax.ops.index_update(MSEw, i, MSE(model.theta['w'], ground_theta['w']))
         MSEh= jax.ops.index_update(MSEh, i, MSE(model.theta['h'], ground_theta['h']))
+        MSEt= jax.ops.index_update(MSEt, i, MSE(model.theta['t'], ground_theta['t']))
 
         ll= jax.ops.index_update(ll, i, model.ll(y, s))
 
-        print(i)
-
-    fig, axs= plt.subplots(2, 2)
+    
+    fig, axs= plt.subplots(3, 2)
     fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
     axs[0][0].plot(MSEk)
     axs[0][0].set_title('MSEk')
@@ -414,10 +443,13 @@ if __name__ == '__main__':  # Test
     axs[1][0].set_title('MSEw')
     axs[1][1].plot(MSEh)
     axs[1][1].set_title('MSEh')
+    axs[2][0].plot(MSEt)
+    axs[2][0].set_title('MSEt')
     plt.show()
     
+
     plt.plot(ll)
-    plt.title('Guassian fit with exp decay, lr=1e-4, adam')
+    plt.title('Guassian fit with exp decay, lr=1e-3, adam')
     plt.xlabel('# iterations')
     plt.ylabel('- log likelihood')
     plt.show()
