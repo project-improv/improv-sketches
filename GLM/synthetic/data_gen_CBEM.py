@@ -18,22 +18,13 @@ class DataGenerator:
     Can both generate θ or spikes from θ or both.
     """
 
-    def __init__(self, params, params_theta=None, theta=None):
+    def __init__(self, params, params_theta=None):
         """
         If theta is not given, one will be provided for you based on params_θ.
         """
         self.params = params.copy()
         self.params_θ = None if params_theta is None else params_theta.copy()
-        if theta is None:
-            self.theta = self._gen_theta(**self.params_θ)
-        else:
-            self.theta = {k: np.asarray(v, dtype=np.float64) for k, v in theta.items()}
-            assert self.theta['w'].shape == (self.params['N'], self.params['N'])
-            assert self.theta['h'].shape == (self.params['N'], self.params['dh'])
-            assert self.theta['k'].shape == (self.params['N'], self.params['ds'])
-            if len(self.theta['b'].shape) == 2:
-                self.theta['b'] = self.theta['b'].flatten()
-            assert len(self.theta['b']) == params['N']
+        self.theta = self._gen_theta(**self.params_θ)
 
         self.i = 0
 
@@ -55,12 +46,6 @@ class DataGenerator:
         :param seed: Seed.
         :param p_inh: Percent of neurons with negative weights.
         :param base: Value for θ_b
-
-        # Parameters for θ_w
-        :param connectedness: Number of neighboring neurons to connect with (see networkx documentation).
-        :param p_rand: Percent of connections to be randomized (by location not weight).
-        :param rand_w: Randomize θ_w weight within [-max_w, max_w].
-        :param max_w: Upper absolute bound of weight value.
 
         TODO: Set parameters for θ_k.
 
@@ -85,31 +70,18 @@ class DataGenerator:
         np.random.shuffle(neutype)
 
         # baseline rates
-        theta['b'] = np.zeros(N)
-        theta['b'][neutype == 1] = [base] * np.sum(neutype == 1)  # 2 * np.random.rand(np.sum(excinh == 1)) - 2
-        theta['b'][neutype == -1] = [base] * np.sum(neutype == -1)  # 1 + np.random.rand(np.sum(excinh == -1))
+        theta['be'] = np.zeros(N)
+        theta['bi'] = np.zeros(N)
+        theta['be'][:] = base  # 2 * np.random.rand(np.sum(excinh == 1)) - 2
+        theta['bi'][:] = base  # 1 + np.random.rand(np.sum(excinh == -1))
 
-        # coupling filters
-        theta['w'] = max_w * np.random.random(size=(N, N)) if rand_w else max_w * np.ones((N, N))
-        G = nx.connected_watts_strogatz_graph(N, connectedness, p_rand)
-
-        theta['w'] *= nx.adjacency_matrix(G).todense()
-        theta['w'] *= neutype  # - (excinh == -1) * 1  # Scaling factor for inhibitory neurons.
-        theta['w'] = theta['w'].T
-
-        # for i in range(N):  # Add inhibitory connections.
-        #     if inh[i] == -1:
-        #         theta['w'][i, np.random.randint(0, N, int(np.sqrt(N)))] = np.random.rand(int(np.sqrt(N))) * np.min(theta['w'][i,:])
 
         # history filter over time dh
         theta['h'] = np.zeros((N, dh))
-        tau = np.linspace(1, 0, dh).reshape((dh, 1))
-        theta['h'][neutype == 1, :] = -0.1 * np.exp(-3 * tau).T  # mag (1.5e-3, 2e-1)
-        theta['h'][neutype == -1, :] = -0.1 * np.exp(-3 * tau).T  # mag (7e-2, 5e-1)
+        theta['h'][:, -1]= -10 # mag (1.5e-3, 2e-1)
 
-        theta['k'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
-
-        theta['t']= np.random.rand(3)
+        theta['ke'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
+        theta['ki'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
 
         return theta
 
@@ -127,17 +99,14 @@ class DataGenerator:
         N = self.params['N']
         ds = self.params['ds']
 
-        base = np.zeros((N, 3))
-
-        base[:,0]= np.random.rand(N)
-        base[:,1]= np.random.rand(N)
-        base[:,2]= np.random.rand(N)
+        base = np.random.rand(N, ds)
 
         #center = ds // 2
         #bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
         #chunk = N // ds
         #for n in range(ds):
         #    base[n * chunk: np.clip((n + 1) * chunk, a_min=0, a_max=N), :] = np.roll(bell, n - center)
+
         return base
 
     def gen_spikes(self, params=None, **kwargs):
@@ -147,12 +116,12 @@ class DataGenerator:
         p = self.params.copy() if params is None else params.copy()
         if 'ds' not in p:
             p['ds'] = 1
-        return self._gen_spikes(self.theta['w'], self.theta['h'], self.theta['b'], self.theta['k'], self.theta['t'],
-                                p['dt'], p['dh'], p['ds'], p['N'], p['M'], **kwargs)
+        return self._gen_spikes(self.theta['h'], self.theta['be'], self.theta['bi'], self.theta['ke'], self.theta['ki'],
+                p['dt'], p['dh'], p['ds'], p['N'], p['M'], **kwargs)
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(w, h, b, k, t, dt, dh, ds, N, M, seed=2, limit=20., stim_int=10):
+    def _gen_spikes(h, be, bi, ke, ki, dt, dh, ds, N, M, seed=2, limit=40., stim_int=10):
         '''
         Generates spike counts from the model
 
@@ -167,64 +136,84 @@ class DataGenerator:
         '''
         np.random.seed(seed)
 
+        El = -60
+        Ee = 0
+        Ei = -80
+        gl = 0.5
+        FRinit = 20
+        Vinit = -60
+        a = 0.45
+        b = 53*a
+        c = 90
+
         # nonlinearity; exp()
-        f = np.exp
 
         r = np.zeros((N, M))  # rates
         y = np.zeros((N, M))  # spikes
         s = np.zeros((ds, M))
-        sv= np.zeros(M)
+        V = np.zeros(((N, M)))
 
         # the initial rate (no history); generate randomly
-        init = np.random.randn(N) * 0.1 - 1
-        r[:, 0] = f(init[0])
+        r[:, 0] = FRinit
+        V[:, 0] = Vinit
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
 
         # simulate the model for next M samples (time steps)
-        for m in range(M):  # step through time
+        for t in range(M):  # step through time
 
-            stim_curr = (m//stim_int) %ds
-            s[stim_curr, m] = 1.
-            sv[m] = stim_curr
+            stim_curr = (t // stim_int) % ds
+            s[stim_curr, t] = 1.
 
             for i in range(N):  # step through neurons
                 # compute model firing rate
-                if m == 0:
+                if t == 0:
                     hist = 0
-                elif m < dh:
-                    hist = np.sum(h[i, :m] * y[i, :m])
+                elif t < dh:
+                    hist = np.sum(h[i, :t] * y[i, :t])
                 else:
-                    hist = np.sum(h[i, :] * y[i, m - dh:m])
+                    hist = np.sum(h[i, :] * y[i, t - dh:t])
 
-                if m == 0:
-                    weights = 0
+                if t == 0:
+                    stimE = 0
+                    stimI = 0
                 else:
-                    weights = np.dot(w[i, :], y[:, m - 1])
+                    stimE = ke[i, stim_curr] + be[i]
+                    stimI = -ki[i, stim_curr] + bi[i]
 
-                if m in [0, 1, 2, 3, 4]:
-                    stim= k[i, :]
-                    #ex= np.asarray([np.exp(-np.abs(i-m)) for i in range(0,m)])
-                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(0, m+1)])
-                    gauss= stim[0]*np.exp(-np.square(sv[0:m+1]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
+                ge= np.log(1+np.exp(stimE))
+                gi= np.log(1+np.exp(stimI))
 
+                gtot= ge +gi + gl 
+                Itot= ge*Ee +gi*Ei +gl*El  
+
+                if t ==0:
+                    V[i, t] = Vinit
                 else:
-                    stim = k[i, :]
-                    #ex= np.asarray([np.exp(-np.abs(i-m)) for i in range(m-5,m)])
-                    ex= np.asarray([t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.001)**2)) for i in range(m-4, m+1)])
-                    gauss= stim[0]*np.exp(-np.square(sv[m-4:m+1]*(np.pi/4)-stim[1])/(2*(stim[2]+0.001)**2))
+                    V[i, t] = np.exp(-dt*gtot)*(V[i, t-1]-Itot/gtot)+Itot/gtot 
 
-                stim_fin= np.sum(np.multiply(ex, gauss))
+                V[i, t]= V[i, t] + hist
 
-                r[i, m] = f(b[i] + hist + weights + stim_fin)
+                if i==5:
+                    print(V[i,t])
+
+                if t==0:
+                    r[i, t] = 20
+                else:
+                    r[i, t] = c*np.log(1+np.exp(a*V[i,t]+b))
 
                 # Clip. np.clip not supported in Numba.
-                above = (r[i, m] >= limit) * limit
-                below = (r[i, m] < limit)
-                r[i, m] = r[i, m] * below + above
+                above = (r[i, t] >= limit) * limit
+                below = (r[i, t] < limit)
+                r[i, t] = r[i, t] * below + above
 
-                y[i, m] = np.random.poisson(r[i, m] * dt)
+                y[i, t] = np.random.poisson(r[i, t] * dt)
 
-        return r, y, s, sv
+                if (i==5):
+                    print(r[i, t])
+                    print(y[i, t])
+
+        return r, y, s
+
 
     def plot_theta(self, name):
         scale = np.max(np.abs(self.theta[name]))
@@ -240,7 +229,7 @@ if __name__ == '__main__':
     dh = 2
     ds = 8
     m = 50
-    dt = 1.
+    dt = 0.001
 
     p = {
         'N': n,
@@ -254,18 +243,12 @@ if __name__ == '__main__':
         'seed': 3,
         'p_inh': 0.6,
         'p_rand': 0.,
-        'base': 0.,
+        'base': 0.3,
         'connectedness': 9,
         'max_w': 0.05
     }
 
     gen = DataGenerator(params=p, params_theta=params_θ)
-
-    # %% Plot θ_w
-    fig, ax = plt.subplots(dpi=100)
-    plot_redblue(ax, gen.theta['w'], fig=fig)
-    plt.show()
-    print(np.sum(gen.theta['w'] != 0) / gen.theta['w'].size)
 
     # %% Save θ
     with open('theta_dict.pickle', 'wb') as f:
@@ -275,13 +258,9 @@ if __name__ == '__main__':
     print('Simulating model...')
 
     # %% Generate data
-    r, y, s, sv = gen.gen_spikes(seed=0)
+    r, y, s = gen.gen_spikes(seed=0)
 
-    print(gen.theta['b'])
-    print(gen.theta['w'])
-    print(gen.theta['h'])
-
-    print('log_likelihood= '+str((np.sum(r)-np.sum(y*np.log(r)))/(m*n**2)))
+    print('log_likelihood= '+str(-np.mean(np.sum(y*np.log(1-np.exp(-r*dt))-(1-y)*r*dt, axis=1))))
 
     data = {'y': y.astype(np.uint8), 'r': r, 's':s}
     print('Spike Counts:')
@@ -296,10 +275,9 @@ if __name__ == '__main__':
     np.savetxt('data_sample.txt', data['y'])
     np.savetxt('rates_sample.txt', data['r'])
     np.savetxt('stim_sample.txt', data['s'])
-    np.savetxt('stim_info_sample.txt', sv)
 
     fig, ax = plt.subplots(dpi=100)
-    u = ax.imshow(r[:, :p['N'] * 4])
+    u = ax.imshow(r[:, :])
     ax.grid(0)
     fig.colorbar(u)
     ax.set_title('Synthetic data with stim')

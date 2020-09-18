@@ -13,7 +13,6 @@ from jax.experimental.optimizers import OptimizerState
 from jax.interpreters.xla import DeviceArray
 import matplotlib.pyplot as plt
 import pickle
-import time
 
 try:  # kernprof
     profile
@@ -63,13 +62,16 @@ class GLMJax:
         if theta is None:
             raise ValueError('θ not specified.')
         else:
-            assert theta['w'].shape == (p['N_lim'], p['N_lim'])
-            assert theta['h'].shape == (p['N_lim'], p['dh'])
-            assert theta['k'].shape == (p['N_lim'], 3)
-            assert (theta['b'].shape == (p['N_lim'],)) or (theta['b'].shape == (p['N_lim'], 1))
+            assert theta['ke'].shape == (p['N_lim'], p['ds'])
+            assert theta['ki'].shape == (p['N_lim'], p['ds'])
+            assert (theta['be'].shape == (p['N_lim'],)) or (theta['be'].shape == (p['N_lim'], 1))
+            assert (theta['bi'].shape == (p['N_lim'],)) or (theta['bi'].shape == (p['N_lim'], 1))
 
-            if len(theta['b'].shape) == 1:  # Array needs to be 2D.
-                theta['b'] = np.reshape(theta['b'], (p['N_lim'], 1))
+            if len(theta['be'].shape) == 1:  # Array needs to be 2D.
+                theta['be'] = np.reshape(theta['be'], (p['N_lim'], 1))
+
+            if len(theta['bi'].shape) == 1:  # Array needs to be 2D.
+                theta['bi'] = np.reshape(theta['bi'], (p['N_lim'], 1))
 
             self._θ = {k: np.asarray(v) for k, v in theta.items()}  # Transfer to device.
 
@@ -87,6 +89,32 @@ class GLMJax:
         self.current_N = 0
         self.current_M = 0
         self.iter = 0
+
+        self.V = np.ones((60,1))*-60
+        self.y = np.zeros((N, 1))
+
+    @profile
+    def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
+        """
+        Check validity of input arrays and pad y and s to (N_lim, M_lim) and (ds, M_lim), respectively.
+        Indicator matrix discerns true zeros from padded ones.
+        :return current_M, current_N, y, s, indicator
+        """
+        #assert y.shape[1] == s.shape[1]
+        #assert s.shape[0] == self.params['ds']
+
+        self.current_N, self.current_M = y.shape
+
+        N_lim = self.params['N_lim']
+        M_lim = self.params['M_lim']
+
+        while y.shape[0] > N_lim:
+            self._increase_θ_size()
+            N_lim = self.params['N_lim']
+
+        indicator = onp.zeros((N_lim, y.shape[1]), dtype=onp.float32)
+
+        return self.current_M, self.current_N, y, s, indicator
 
     def ll(self, y, s, indicator=None):
         return self._ll(self.theta, self.params, *self._check_arrays(y, s, indicator))
@@ -106,7 +134,6 @@ class GLMJax:
                                              self.iter, *self._check_arrays(y, s, indicator))
             self.iter += 1
 
-
     @staticmethod
     @partial(jit, static_argnums=(1, 2, 3))
     def _fit_ll(θ: Dict, p: Dict, opt_update, get_params, iter, m, n, y, s, indicator):
@@ -125,58 +152,10 @@ class GLMJax:
     def grad(self, y, s, indicator=None) -> DeviceArray:
         return grad(self._ll)(self.theta, self.params, *self._check_arrays(y, s, indicator)).copy()
 
-    def predict(self, y, s, indicator=None):
-        y, s, indicator = self._check_arrays(y, s, indicator)[2:]
-        linear = GLMJax._run_linear(self.theta, self.params, y, s)
-        log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
-        return (np.exp(log_r̂) * indicator)[:self.current_N, :self.current_M]
-
-    def residual(self, y, s, indicator=None):
-        return y - self.predict(y, s, indicator)
-
     def linear_contributions(self, y, s, indicator=None):
         y, s, indicator = self._check_arrays(y, s, indicator)[2:]
         linear = GLMJax._run_linear(self.theta, self.params, y, s)
         return (linear[0][:self.current_N], *[(u*indicator)[:self.current_N, :self.current_M] for u in linear[1:4]], linear[4])
-
-    @profile
-    def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
-        """
-        Check validity of input arrays and pad y and s to (N_lim, M_lim) and (ds, M_lim), respectively.
-        Indicator matrix discerns true zeros from padded ones.
-        :return current_M, current_N, y, s, indicator
-        """
-
-        self.current_N, self.current_M = y.shape
-
-        N_lim = self.params['N_lim']
-        M_lim = self.params['M_lim']
-
-        while y.shape[0] > N_lim:
-            self._increase_θ_size()
-            N_lim = self.params['N_lim']
-
-        if indicator is None:
-            indicator = onp.ones(y.shape)
-
-        if y.shape != (N_lim, M_lim):
-            y_ = onp.zeros((N_lim, M_lim), dtype=onp.float32)
-            s_ = onp.zeros((M_lim), dtype=onp.float32)
-            indicator_ = onp.zeros((N_lim, M_lim), dtype=onp.float32)
-
-            y_[:y.shape[0], :y.shape[1]] = y
-            s_[:s.shape[0]] = s
-
-            if indicator is not None:
-                indicator_[:y.shape[0], :y.shape[1]] = indicator
-            else:
-                indicator_[:y.shape[0], :y.shape[1]] = 1.
-            y, s, indicator = y_, s_, indicator_
-
-        if y.shape[1] > M_lim:
-            raise ValueError('Data are too wide (M exceeds M_lim).')
-
-        return self.current_M, self.current_N, y, s, indicator
 
     def _increase_θ_size(self) -> None:
         """
@@ -187,12 +166,11 @@ class GLMJax:
         print(f"Increasing neuron limit to {2 * N_lim}.")
         self._θ = self.theta
 
-        self._θ['w'] = onp.concatenate((self._θ['w'], onp.zeros((N_lim, N_lim))), axis=1)
-        self._θ['w'] = onp.concatenate((self._θ['w'], onp.zeros((N_lim, 2 * N_lim))), axis=0)
-
         self._θ['h'] = onp.concatenate((self._θ['h'], onp.zeros((N_lim, self.params['dh']))), axis=0)
-        self._θ['b'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
-        #self._θ['k'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
+        self._θ['be'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
+        self._θ['ke'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
+        self._θ['bi'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
+        self._θ['ki'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
 
         self.params['N_lim'] = 2 * N_lim
         self._θ = self.opt_init(self._θ)
@@ -204,104 +182,53 @@ class GLMJax:
 
     @staticmethod
     @partial(jit, static_argnums=(1,))
-    def _run_linear(θ: Dict, p: Dict, y, s) -> Tuple:
-        """
-        Return log rates from the model. That is, the linear part of the model.
-        """
-
-        a= np.reshape(θ["k"][:,0], (p['N_lim'],1))
-        b= np.reshape(θ["k"][:,1], (p['N_lim'],1))
-        c= np.reshape(θ["k"][:,2], (p['N_lim'],1))
-
-        A= a @ np.ones((1, p['N_lim'])) 
-        B= b @ np.ones((1, p['M_lim']))
-        C= c @ np.ones((1, p['M_lim']))
-
-        t= θ["t"]
-
-        gauss= A @ np.exp(-np.divide(np.square(s*(np.pi/4)-B), 2*(C+0.001)**2))
-
-        cal_stim= np.zeros((p['N_lim'],p['M_lim']))
-
-        for m in range(p['M_lim']):
-            
-            if m in [0, 1, 2, 3, 4]:
-                ex= np.zeros((1,m+1))
-                ex= jax.ops.index_update(ex, jax.ops.index[:, 0:m+1], [[t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.01)**2)) for i in range(m+1)]])
-                mult= np.multiply(gauss[:,0:m+1], ex)
-                sm= mult @ np.ones((m+1,1))
-                cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[:,0:m+1], sm)
-
-            else:
-                ex= np.zeros((1,5))
-                ex= jax.ops.index_update(ex, jax.ops.index[:, 0:5], [[t[0]*np.exp(-np.square(i-m+t[1])/(2*(t[2]+0.01)**2)) for i in range(m-4, m+1)]])
-                mult= np.multiply(gauss[:,m-4:m+1], ex)
-                sm= mult @ np.ones((5,1))
-                cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[:, m-4:m+1], sm)
-
-        '''
-
-        for n in range(p['N_lim']):
-            
-            gauss= a[n] * np.exp(-(np.square(s*(np.pi/4)-b[n])/ (2*(c[n]+0.001)**2)))
-            gauss1= 0.3 * np.exp(-(np.square(s*(np.pi/4)-np.pi)/ (2*(0.1+0.001)**2)))
-
-            for m in range(p['M_lim']):
-                
-                ex= np.zeros(p['M_lim'])
-                ex=jax.ops.index_update(ex, jax.ops.index[0:m], [np.exp(-np.abs(i-m)) for i in range(m)])
-
-                cal= jax.ops.index_update(cal, jax.ops.index[n,m], np.sum(np.multiply(gauss1, ex)))
-                
-                if m in [0, 1, 2, 3, 4]:
-                    ex= np.zeros(m)
-                    ex= jax.ops.index_update(ex, jax.ops.index[0:m], [np.exp(-np.abs(i-m)) for i in range(m)])
-                    cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss[0:m], ex)))
-
-                else: 
-                    ex= np.zeros(5)
-                    ex= jax.ops.index_update(ex, jax.ops.index[0:5], [np.exp(-np.abs(i-m)) for i in range(m-5, m)])
-                    cal_stim= jax.ops.index_update(cal_stim, jax.ops.index[n,m], np.sum(np.multiply(gauss[m-5:m], ex)))
-        '''   
-
-        cal_hist = GLMJax._convolve(p, y, θ["h"])
-        cal_weight = (θ["w"] * (np.eye(p['N_lim']) == 0)) @ y
-        # Necessary padding since history convolution shrinks M.
-        cal_weight = np.hstack((np.zeros((p['N_lim'], p['dh'])), cal_weight[:, p['dh'] - 1:p['M_lim'] - 1]))
-
-        return θ["b"], cal_weight, cal_hist, cal_stim, np.log(p['dt'])
-
-
-    @staticmethod
-    @partial(jit, static_argnums=(1,))
     def _ll(θ: Dict, p: Dict, m, n, y, s, indicator) -> DeviceArray:
         """
         Return negative log-likelihood of data given model.
         ℓ1 and ℓ2 regularizations are specified in params.
         """
-        linear = GLMJax._run_linear(θ, p, y, s)
-        log_r̂ = linear[0] + linear[1] + linear[2] + linear[3] + linear[4]  # Broadcast.
 
-        log_r̂ *= indicator
-        r̂ = np.exp(log_r̂)
-        r̂ *= indicator
+        El = -60
+        Ee = 0
+        Ei = -80
+        gl = 0.5
+        a = 0.45
+        b = 53*a
+        c = 90
 
-        l1 = p['λ1'] * np.sum(np.abs(θ["w"])) / (np.sqrt(m) * n**2)
-        l2 = p['λ2'] * np.sum(θ["w"] ** 2) / (2 * np.sqrt(m) * n**2)
+        ke= θ['ke']
+        ki= θ['ki']
+        be= θ['be']
+        bi= θ['bi']
 
-        return (np.sum(r̂) - np.sum(y * log_r̂)) / (m * n ** 2) + l1 + l2
+        r= np.zeros(y.shape)
 
-    @staticmethod
-    @partial(jit, static_argnums=(0,))
-    def _convolve(p: Dict, y, θ_h) -> DeviceArray:
-        """
-        Sliding window convolution for history terms.
-        """
-        cvd = np.zeros((y.shape[0], y.shape[1] - p['dh']))
-        for i in np.arange(p['dh']):
-            w_col = np.reshape(θ_h[:, i], (p['N_lim'], 1))
-            cvd += w_col * y[:, i:p['M_lim'] - (p['dh'] - i)]
-        return np.hstack((np.zeros((p['N_lim'], p['dh'])), cvd))
+        for t in range(y.shape[1]):
+            if t == 0:
+                cal_hist = -10*self.y
+            elif t == y.shape[1]:
+                cal_hist = -10*y[:,t-1]
+                self.y= y[:, t]
+            else:
+                cal_hist = -10*y[:,t-1]
+
+            stim_exc = ke @ s 
+            stim_inh = ki @ s
+
+            ge = np.log(1+ np.exp(stim_exc + be))
+            gi = np.log(1+ np.exp(stim_inh + bi))
+
+            gtot = gl + ge +gi
+            Itot = gl*El + ge*Ee + gi*Ei
+
+            V = np.exp(-p['dt']*gtot)*(self.V-Itot/gtot)+Itot/gtot 
+            self.V = V + cal_hist
+
+            rnow = c*np.log(1+np.exp(a*self.V+b))
+
+            r = jax.ops.index_update(r, i, rnow)
+
+        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1))
 
     @property
     def theta(self) -> Dict:
@@ -384,78 +311,55 @@ def MSE(x, y):
 if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
 
-    N = 10
-    M = 50
+    N = 40
+    M = 500
     dh = 2
     ds = 8
-    p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 1, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1':4, 'λ2':0.0}
+    p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.001, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1':4, 'λ2':0.0}
 
-    w = random.normal(key, shape=(N, N)) * 0.001
-    h = random.normal(key, shape=(N, dh)) * 0.001
-    k = np.zeros((N,3))
-    k= jax.ops.index_update(k, jax.ops.index[:, 0], onp.random.rand(N))
-    k= jax.ops.index_update(k, jax.ops.index[:, 1], onp.random.rand(N))
-    k= jax.ops.index_update(k, jax.ops.index[:, 2], onp.random.rand(N))
-    t= onp.random.rand(3)
-    b = random.normal(key, shape=(N, 1)) * 0.001
-    
+    ke = onp.random.rand(N, ds)
+    ki = onp.random.rand(N, ds)
 
-    theta = {'h': np.flip(h, axis=1), 'w': w, 'b': b, 'k': k, 't': t}
+    be = random.normal(key, shape=(N, 1)) * 0.01
+    bi = random.normal(key, shape=(N, 1)) * 0.01
+
+    theta = {'be': be, 'ke': ke, 'ki': ki, 'bi': bi}
     model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
 
     y= onp.loadtxt('data_sample.txt')
-    s= onp.loadtxt('stim_info_sample.txt')
-    s= np.reshape(s, (50,1)).transpose()
+    s= onp.loadtxt('stim_sample.txt')
 
-    ll= np.zeros(4000)
+    MSEke= np.zeros(500)
+    MSEbe= np.zeros(500)
+    MSEki= np.zeros(500)
+    MSEbi= np.zeros(500)
 
-    MSEk= np.zeros(4000)
-    MSEb= np.zeros(4000)
-    MSEw= np.zeros(4000)
-    MSEh= np.zeros(4000)
-    MSEt= np.zeros(4000)
 
     indicator= None
 
     with open('theta_dict.pickle', 'rb') as f:
         ground_theta= pickle.load(f)
 
+    window= 10
 
-    for i in range(4000):
+    for i in range(500):
 
-        print(i)
-        model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
+        if i<= window:
+            yfit = y[:, 0:i]
+            sfit = s[:, 0:i]
 
-        MSEk= jax.ops.index_update(MSEk, i, MSE(model.theta['k'], ground_theta['k']))
-        MSEb= jax.ops.index_update(MSEb, i, MSE(model.theta['b'], ground_theta['b']))
-        MSEw= jax.ops.index_update(MSEw, i, MSE(model.theta['w'], ground_theta['w']))
-        MSEh= jax.ops.index_update(MSEh, i, MSE(model.theta['h'], ground_theta['h']))
-        MSEt= jax.ops.index_update(MSEt, i, MSE(model.theta['t'], ground_theta['t']))
+        else:
+            yfit = y[:, i-window:i]
+            sfit = s[:, i-window:i]
 
-        ll= jax.ops.index_update(ll, i, model.ll(y, s))
+        model.fit(yfit, sfit, return_ll=False, indicator=onp.ones(y.shape))
 
+        MSEke= jax.ops.index_update(MSEke, i, MSE(model.theta['ke'], ground_theta['ke']))
+        MSEbe= jax.ops.index_update(MSEbe, i, MSE(model.theta['be'], ground_theta['be']))
+        MSEki= jax.ops.index_update(MSEki, i, MSE(model.theta['ki'], ground_theta['ki']))
+        MSEbi= jax.ops.index_update(MSEbi, i, MSE(model.theta['bi'], ground_theta['bi']))
     
-    fig, axs= plt.subplots(3, 2)
-    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
-    axs[0][0].plot(MSEk)
-    axs[0][0].set_title('MSEk')
-    axs[0][1].plot(MSEb)
-    axs[0][1].set_title('MSEb')
-    axs[1][0].plot(MSEw)
-    axs[1][0].set_title('MSEw')
-    axs[1][1].plot(MSEh)
-    axs[1][1].set_title('MSEh')
-    axs[2][0].plot(MSEt)
-    axs[2][0].set_title('MSEt')
-    plt.show()
-    
-
-    plt.plot(ll)
-    plt.title('Guassian fit with exp decay, lr=1e-3, adam')
-    plt.xlabel('# iterations')
-    plt.ylabel('- log likelihood')
-    plt.show()
-    
+    '''
     llfin = model.ll(y,s)
 
     r_ground= onp.loadtxt('rates_sample.txt')
@@ -467,11 +371,6 @@ if __name__ == '__main__':  # Test
     log_r *= indicator
     r= np.exp(log_r)
     r *= indicator
-
-    print(model.theta['k'])
-    print(model.theta['b'])
-    print(model.theta['w'])
-    print(model.theta['h'])
     
     fig, (ax1, ax2) = plt.subplots(2)
     u1 = ax1.imshow(r[:,:])
@@ -483,8 +382,8 @@ if __name__ == '__main__':  # Test
     ax2.set_xlabel('time steps')
     ax1.set_ylabel('neurons')
     ax2.set_ylabel('neurons')
-    ax1.set_title('Model fit, Guassian with temporal decay')
-    ax2.set_title('Ground truth, Gaussian with temporal decay')
+    ax1.set_title('Ground truth, single cos')
+    ax2.set_title('Model fit, single cos')
     plt.show()
     
     onp.savetxt('rates_model.txt', r)
@@ -493,7 +392,7 @@ if __name__ == '__main__':  # Test
 
     print('MSE loss= ' +str(mse))
 
-
+    '''
     #sN = 8  #
     #data = onp.random.randn(sN, 2)  # onp.zeros((8, 50))
     #stim = onp.random.randn(ds, 2)
