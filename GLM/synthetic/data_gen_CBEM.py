@@ -78,7 +78,7 @@ class DataGenerator:
 
         # history filter over time dh
         theta['h'] = np.zeros((N, dh))
-        theta['h'][:, -1]= -10 # mag (1.5e-3, 2e-1)
+        theta['h']= np.ones((N,1))-10 # mag (1.5e-3, 2e-1)
 
         theta['ke'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
         theta['ki'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
@@ -100,6 +100,7 @@ class DataGenerator:
         ds = self.params['ds']
 
         base = np.random.rand(N, ds)
+        base = (base-0.5)*2
 
         #center = ds // 2
         #bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
@@ -121,7 +122,7 @@ class DataGenerator:
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(h, be, bi, ke, ki, dt, dh, ds, N, M, seed=2, limit=40., stim_int=10):
+    def _gen_spikes(h, be, bi, ke, ki, dt, dh, ds, N, M, seed=2, limit=20., stim_int=10):
         '''
         Generates spike counts from the model
 
@@ -140,7 +141,6 @@ class DataGenerator:
         Ee = 0
         Ei = -80
         gl = 0.5
-        FRinit = 20
         Vinit = -60
         a = 0.45
         b = 53*a
@@ -151,10 +151,11 @@ class DataGenerator:
         r = np.zeros((N, M))  # rates
         y = np.zeros((N, M))  # spikes
         s = np.zeros((ds, M))
+        #s = np.random.rand(ds, M)
         V = np.zeros(((N, M)))
 
         # the initial rate (no history); generate randomly
-        r[:, 0] = FRinit
+        r[:, 0] = 0
         V[:, 0] = Vinit
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
 
@@ -169,16 +170,18 @@ class DataGenerator:
                 if t == 0:
                     hist = 0
                 elif t < dh:
-                    hist = np.sum(h[i, :t] * y[i, :t])
+                    hist = y[i, t-1]*-10
                 else:
-                    hist = np.sum(h[i, :] * y[i, t - dh:t])
+                    hist = y[i, t-1]*-10
 
                 if t == 0:
                     stimE = 0
                     stimI = 0
                 else:
                     stimE = ke[i, stim_curr] + be[i]
-                    stimI = -ki[i, stim_curr] + bi[i]
+                    stimI = ki[i, stim_curr] + bi[i]
+                    #stimE = ke[i, :]@s[:,t] +be[i]
+                    #stimI = ke[i, :]@s[:,t] +bi[i]
 
                 ge= np.log(1+np.exp(stimE))
                 gi= np.log(1+np.exp(stimI))
@@ -193,24 +196,9 @@ class DataGenerator:
 
                 V[i, t]= V[i, t] + hist
 
-                if i==5:
-                    print(V[i,t])
-
-                if t==0:
-                    r[i, t] = 20
-                else:
-                    r[i, t] = c*np.log(1+np.exp(a*V[i,t]+b))
-
-                # Clip. np.clip not supported in Numba.
-                above = (r[i, t] >= limit) * limit
-                below = (r[i, t] < limit)
-                r[i, t] = r[i, t] * below + above
+                r[i, t] = c*np.log(1+np.exp(a*V[i,t]+b))
 
                 y[i, t] = np.random.poisson(r[i, t] * dt)
-
-                if (i==5):
-                    print(r[i, t])
-                    print(y[i, t])
 
         return r, y, s
 
@@ -225,10 +213,10 @@ class DataGenerator:
 
 
 if __name__ == '__main__':
-    n = 10
+    n = 50
     dh = 2
     ds = 8
-    m = 50
+    m = 40000
     dt = 0.001
 
     p = {

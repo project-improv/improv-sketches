@@ -91,8 +91,6 @@ class GLMJax:
         self.current_M = 0
         self.iter = 0
 
-        self.V = np.ones((60,1))*-60
-        self.y = np.zeros((N, 1))
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -197,7 +195,7 @@ class GLMJax:
         be= θ['be']
         bi= θ['bi']
 
-        stim_exc = ke @ s 
+        stim_exc = ke @ s
         stim_inh = ki @ s
 
         ge = np.log(1+ np.exp(stim_exc + be))
@@ -208,48 +206,75 @@ class GLMJax:
 
         def V_loop(y, gtot, Itot):
 
-            with loops.Scope() as s:
-                s.r= np.zeros(y.shape)
+            with loops.Scope() as sc:
+                sc.r= np.zeros(y.shape)
 
-                for t in range(s.r.shape[1]):
-                    for _ in s.cond_range(t==0):
+                for t in range(sc.r.shape[1]):
+
+                    for _ in sc.cond_range(t==0):
                         Vnow = np.ones(p['N_lim'])*-60
                         V= np.ones(p['N_lim'])*-60
-                        cal_hist = 0
+                        cal_hist = θ['h']*0
 
-                    for _ in s.cond_range(t!=1):
+                    for _ in sc.cond_range(t!=1):
                         Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V-Itot[:,t]/gtot[:,t])+Itot[:,t]/gtot[:,t])
-                        cal_hist = -10*y[:,t-1]
+                        cal_hist = -θ['h']*y[:,t-1]
 
                         V = Vnow+cal_hist
 
-                    s.r = jax.ops.index_update(s.r, jax.ops.index[:,t], c*np.log(1+np.exp(a*V+b)))
+                    sc.r = jax.ops.index_update(sc.r, jax.ops.index[:,t], c*np.log(1+np.exp(a*V+b)))
 
-                return s.r 
+                return sc.r 
 
         r = V_loop(y, gtot, Itot)
 
-        '''
+        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1))
+
+    def ll_r(self, y, s, p):
+
+        El = -60
+        Ee = 0
+        Ei = -80
+        gl = 0.5
+        a = 0.45
+        b = 53*a
+        c = 90
+
+        θ = self.theta
+
+        ke= θ['ke']
+        ki= θ['ki']
+        be= θ['be']
+        bi= θ['bi']
+
+        r= np.zeros((p['N_lim'], p['M_lim']))
+
+        stim_exc = ke @ s
+        stim_inh = ki @ s
+
+        ge = np.log(1+ np.exp(stim_exc + be))
+        gi = np.log(1+ np.exp(stim_inh + bi))
+
+        gtot = gl + ge +gi
+        Itot = gl*El + ge*Ee + gi*Ei
+
         for t in range(p['M_lim']):
 
-            if t == 0:
-
+            if t==0:
                 Vnow = np.ones(p['N_lim'])*-60
+                V= np.ones(p['N_lim'])*-60
                 cal_hist = 0
 
             else:
-                cal_hist = -10*y[:,t-1]
+                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V-Itot[:,t]/gtot[:,t])+Itot[:,t]/gtot[:,t])
+                cal_hist = -θ['h']*y[:,t-1]
 
-                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V[:,t-1]-Itot[:,t]/gtot[:,t])+Itot[:,t]/gtot[:,t])
+                V = Vnow+cal_hist  
 
-            V= jax.ops.index_update(V, jax.ops.index[:,t], Vnow+cal_hist)
+            r = jax.ops.index_update(r, jax.ops.index[:,t], c*np.log(1+np.exp(a*V+b)))
 
-            rnow = c*np.log(1+np.exp(a*V[:,t]+b))
+        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1)), r
 
-            r = jax.ops.index_update(r, jax.ops.index[:,t], rnow)
-        '''
-
-        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1))
 
     @property
     def theta(self) -> Dict:
@@ -333,39 +358,36 @@ if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
 
     N = 10
-    M = 50
+    M = 100
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.001, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1':4, 'λ2':0.0}
 
-    ke = onp.random.rand(N, ds)
-    ki = onp.random.rand(N, ds)
+    with open('theta_dict.pickle', 'rb') as f:
+        ground_theta= pickle.load(f)
 
-    be = random.normal(key, shape=(N, 1)) * 0.01
-    bi = random.normal(key, shape=(N, 1)) * 0.01
+    ke = ground_theta['ke'] #(onp.random.rand(N, ds)-0.5)*2
+    ki = ground_theta['ki'] #(onp.random.rand(N, ds)-0.5)*2
 
-    theta = {'be': be, 'ke': ke, 'ki': ki, 'bi': bi}
-    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
+    be = ground_theta['be'] #onp.ones((N,1)) * 0.5
+    bi = ground_theta['bi'] #onp.ones((N,1)) * 0.5
+
+    h= 10.0
+
+    theta = {'ke': ke, 'be': be, 'ki': ki, 'bi': bi, 'h':h}
+    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-2})
 
     y= onp.loadtxt('data_sample.txt')
     s= onp.loadtxt('stim_sample.txt')
 
-    MSEke= np.zeros(200)
-    MSEbe= np.zeros(200)
-    MSEki= np.zeros(200)
-    MSEbi= np.zeros(200)
-
+    MSEke= np.zeros(2000)
+    MSEbe= np.zeros(2000)
+    MSEki= np.zeros(2000)
+    MSEbi= np.zeros(2000)
 
     indicator= None
 
-    with open('theta_dict.pickle', 'rb') as f:
-        ground_theta= pickle.load(f)
-
-    window= 10
-
-    for i in range(200):
-
-        print(i)
+    for i in range(2000):
 
         model.fit(y, s, return_ll=False, indicator=onp.ones(y.shape))
 
@@ -373,17 +395,24 @@ if __name__ == '__main__':  # Test
         MSEbe= jax.ops.index_update(MSEbe, i, MSE(model.theta['be'], ground_theta['be']))
         MSEki= jax.ops.index_update(MSEki, i, MSE(model.theta['ki'], ground_theta['ki']))
         MSEbi= jax.ops.index_update(MSEbi, i, MSE(model.theta['bi'], ground_theta['bi']))
+
+    fig, axs= plt.subplots(2, 2)
+    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
+    axs[0][0].plot(MSEke)
+    axs[0][0].set_title('MSEke')
+    axs[0][1].plot(MSEbe)
+    axs[0][1].set_title('MSEbe')
+    axs[1][0].plot(MSEki)
+    axs[1][0].set_title('MSEki')
+    axs[1][1].plot(MSEbi)
+    axs[1][1].set_title('MSEbi')
+    plt.show()
     
-    llfin = model.ll(y,s, return_r= True)
+    llfin, r = model.ll_r(y, s, p)
 
     r_ground= onp.loadtxt('rates_sample.txt')
 
     indicator= onp.ones(y.shape)
-
-    log_r= lin[0] + lin[1] + lin[2] + lin[3] + lin[4]
-    log_r *= indicator
-    r= np.exp(log_r)
-    r *= indicator
     
     fig, (ax1, ax2) = plt.subplots(2)
     u1 = ax1.imshow(r[:,:])
@@ -395,8 +424,8 @@ if __name__ == '__main__':  # Test
     ax2.set_xlabel('time steps')
     ax1.set_ylabel('neurons')
     ax2.set_ylabel('neurons')
-    ax1.set_title('Ground truth, single cos')
-    ax2.set_title('Model fit, single cos')
+    ax1.set_title('Model fit')
+    ax2.set_title('Ground truth')
     plt.show()
     
     onp.savetxt('rates_model.txt', r)
@@ -404,6 +433,12 @@ if __name__ == '__main__':  # Test
     mse= MSE(r, r_ground)
 
     print('MSE loss= ' +str(mse))
+
+    print(model.theta['ke'])
+    print(model.theta['be'])
+    print(model.theta['ki'])
+    print(model.theta['bi'])
+    print(model.theta['h'])
 
 
 
