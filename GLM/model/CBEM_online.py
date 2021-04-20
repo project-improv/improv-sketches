@@ -121,7 +121,7 @@ class GLMJax:
         return self._ll(self.theta, self.params, *self._check_arrays(y, s, indicator))
 
     @profile
-    def fit(self, y, s, V, ycurr, return_ll=False, indicator=None):
+    def fit(self, y, s, Vin, ycurr, return_ll=False, indicator=None):
         """
         Fit model. Returning log-likelihood is ~2 times slower.
         """
@@ -131,51 +131,47 @@ class GLMJax:
             self.iter += 1
             return ll
         else:
-            self._θ, V, y = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
-                                             self.iter, V, ycurr, *self._check_arrays(y, s, indicator))
+            self._θ, Vret, y = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
+                                             self.iter, Vin, ycurr, *self._check_arrays(y, s, indicator))
             self.iter += 1
-            return V, y
+            return Vret, y
 
     @staticmethod
     @partial(jit, static_argnums=(1, 2, 3))
-    def _fit_ll(θ: Dict, p: Dict, opt_update, get_params, iter, V, ycurr, m, n, y, s, indicator):
+    def _fit_ll(θ: Dict, p: Dict, opt_update, get_params, iter, Vin, ycurr, m, n, y, s, indicator):
         ll, Δ = value_and_grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, indicator)
         θ = opt_update(iter, Δ, θ)
         return θ, ll
 
     @staticmethod
     @partial(jit, static_argnums=(1, 2, 3, 4))
-    def _fit(θ: Dict, p: Dict, rpf, opt_update, get_params, iter, V, ycurr, m, n, y, s, indicator):
+    def _fit(θ: Dict, p: Dict, rpf, opt_update, get_params, iter, Vin, ycurr, m, n, y, s, indicator):
         for i in range(rpf):
-            Δ = grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, V, ycurr, indicator)
-            if y.shape[1]<10:
-                V= np.ones(p['N_lim'])*-60
-                cal_hist = 0
 
-            else:
-
-                theta = get_params(θ)
-                El = -60
-                Ee = 0
-                Ei = -80
-                gl = 0.5
-
-                cal_hist = ycurr*-theta['h']
-
-                stim_exc = theta['ke'] @ s
-                stim_inh = theta['ki'] @ s
-
-                ge = np.log(1+ np.exp(stim_exc + theta['be']))
-                gi = np.log(1+ np.exp(stim_inh + theta['bi']))
-
-                gtot = gl + ge +gi
-                Itot = gl*El + ge*Ee + gi*Ei
-
-                V = np.exp(-p['dt']*gtot[:,0])*(V-Itot[:,0]/gtot[:,0])+Itot[:,0]/gtot[:,0] 
-
+            Δ = grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, Vin, ycurr, indicator)
             θ = opt_update(iter, Δ, θ)
 
-        return θ, V, y[:, 0]
+        theta = get_params(θ)
+        El = -60
+        Ee = 0
+        Ei = -80
+        gl = 0.5
+
+        cal_hist = ycurr*theta['h']
+
+        stim_exc = theta['ke'] @ s
+        stim_inh = theta['ki'] @ s
+
+        ge = np.log(1+ np.exp(stim_exc + theta['be']))
+        gi = np.log(1+ np.exp(stim_inh + theta['bi']))
+
+        gtot = gl + ge +gi
+        Itot = gl*El + ge*Ee + gi*Ei
+
+        Vret = np.multiply(np.exp(-p['dt']*gtot[:,0]),(Vin-Itot[:,0]/gtot[:,0]))+Itot[:,0]/gtot[:,0] 
+        Vret = Vret+cal_hist
+
+        return θ, Vret, y[:, 0]
 
     def grad(self, y, s, indicator=None) -> DeviceArray:
         return grad(self._ll)(self.theta, self.params, *self._check_arrays(y, s, indicator)).copy()
@@ -242,11 +238,11 @@ class GLMJax:
 
                     for _ in sc.cond_range(t==0):
                         Vnow= V
-                        cal_hist = -θ['h']*ycurr
+                        cal_hist = θ['h']*ycurr
 
                     for _ in sc.cond_range(t!=1):
                         Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]), (V-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
-                        cal_hist = np.multiply(-θ['h'],y[:,t-1])
+                        cal_hist = np.multiply(θ['h'],y[:,t-1])
 
                     V = Vnow+cal_hist
 
@@ -256,7 +252,7 @@ class GLMJax:
 
         r = V_loop(y, V, ycurr, gtot, Itot)
 
-        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1)) + 4*(0.5*np.linalg.norm(ke,2)+0.5*np.linalg.norm(ki,2))
+        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1))
 
     def ll_r(self, y, s, p):
         
@@ -276,6 +272,7 @@ class GLMJax:
         bi= θ['bi']
 
         r= np.zeros((p['N_lim'], p['M_lim']))
+        V= np.zeros((p['N_lim'], p['M_lim']))
 
         stim_exc = ke @ s
         stim_inh = ki @ s
@@ -290,18 +287,19 @@ class GLMJax:
 
             if t==0:
                 Vnow = np.ones(p['N_lim'])*-60
-                V= np.ones(p['N_lim'])*-60
-                cal_hist = -θ['h']*0
+                cal_hist = θ['h']*0
 
             else:
-                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
-                cal_hist = np.multiply(-θ['h'],y[:,t-1])
+                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V[:,t-1]-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
+                cal_hist = np.multiply(θ['h'],y[:,t-1])
 
-            V = Vnow+cal_hist  
+            Vcurr = Vnow +cal_hist
+
+            V = jax.ops.index_update(V, jax.ops.index[:,t], Vcurr)
             
-            r = jax.ops.index_update(r, jax.ops.index[:,t], c*np.log(1+np.exp(a*V+b)))
+            r = jax.ops.index_update(r, jax.ops.index[:,t], c*np.log(1+np.exp(a*Vcurr+b)))
 
-        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1)), r
+        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1)), r, V
 
     @property
     def theta(self) -> Dict:
@@ -318,65 +316,6 @@ class GLMJax:
         return f'simGLM Iteration: {self.iter}, \n Parameters: {self.params})'
 
 
-
-class GLMJaxSynthetic(GLMJax):
-    def __init__(self, *args, data=None, offline=False, **kwargs):
-
-        """
-        GLMJax with data handling. Data are given beforehand to the constructor.
-
-        If offline:
-            If M_lim == y.shape[1]: The entire (y, s) is passed into the fit function.
-            If M_lim > y.shape[1]: A random slice of width M_lim is used. See `self.rand`.
-
-        If not offline:
-            Data of width `self.iter` are used until `self.iter` > M_lim.
-            Then, a sliding window of width M_lim is used instead.
-        """
-
-        super().__init__(*args, **kwargs)
-
-        self.y, self.s = data
-        self.offline = offline
-        if self.offline:
-            self.rand = onp.zeros(0)  # Shuffle, batch training.
-            self.current_M = self.params['M_lim']
-            self.current_N = self.params['N_lim']
-
-        assert self.y.shape[1] == self.s.shape[1]
-        assert self.y.shape[1] >= self.current_M
-
-    @profile
-    def fit(self, return_ll=False, indicator=None):
-        if self.offline:
-            if self.iter % 10000 == 0:
-                self.rand = onp.random.randint(low=0, high=self.y.shape[1] - self.params['M_lim'] + 1, size=10000)
-
-            i = self.rand[self.iter % 10000]
-            args = (self.params['M_lim'], self.params['N_lim'],
-                    self.y[:, i:i + self.params['M_lim']],
-                    self.s[:, i:i + self.params['M_lim']], self.ones)
-
-        else:
-            if self.iter < self.params['M_lim']:  # Increasing width.
-                y_step = self.y[:, :self.iter + 1]
-                stim_step = self.s[:, :self.iter + 1]
-                args = self._check_arrays(y_step, stim_step, indicator=indicator)
-            else:  # Sliding window.
-                if indicator is None:
-                    indicator = self.ones
-                y_step = self.y[:, self.iter - self.params['M_lim']: self.iter]
-                stim_step = self.s[:, self.iter - self.params['M_lim']: self.iter]
-                args = (self.params['M_lim'], self.params['N_lim'], y_step, stim_step, indicator)
-
-        if return_ll:
-            self._θ, ll = self._fit_ll(self._θ, self.params, self.opt_update, self.get_params, self.iter, *args)
-            self.iter += 1
-            return ll
-        else:
-            self._θ = self._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params, self.iter, *args)
-            self.iter += 1
-
 def MSE(x, y):
 
     return (np.square(x - y)).mean(axis=None)
@@ -386,7 +325,7 @@ if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
 
     N = 50
-    M = 40000
+    M = 1000
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.001, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1': 4, 'λ2':0.0}
@@ -394,63 +333,65 @@ if __name__ == '__main__':  # Test
     with open('theta_dict.pickle', 'rb') as f:
         ground_theta= pickle.load(f)
 
-    ke = ground_theta['ke'] #(onp.random.rand(N, ds)-0.5)*2
-    ki = ground_theta['ki'] #(onp.random.rand(N, ds)-0.5)*2
+    ke = ground_theta['ke']  #(onp.random.rand(N, ds)-0.5)*2 #onp.zeros((N,ds)) 
+    ki = ground_theta['ki']  #(onp.random.rand(N, ds)-0.5)*2 #onp.zeros((N,ds)) 
 
-    be = ground_theta['be'] #onp.ones((N,1)) * 0.5
-    bi = ground_theta['bi'] #onp.ones((N,1)) * 0.5
+    be = ground_theta['be']  #onp.ones((N,1)) * 0.5 #onp.zeros((N,1))
+    bi = ground_theta['bi']  #onp.ones((N,1)) * 0.5 #onp.zeros((N,1))
 
     y= onp.loadtxt('data_sample.txt')
     s= onp.loadtxt('stim_sample.txt')
 
-    h= onp.ones(N)*10.0
+    h= onp.ones(N)*-10.0
 
     theta = {'be': be, 'ke': ke, 'ki': ki, 'bi': bi, 'h':h}
-    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-2})
+    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
 
-    MSEke= np.zeros(M)
-    MSEbe= np.zeros(M)
-    MSEki= np.zeros(M)
-    MSEbi= np.zeros(M)
+    n_iters= 10
+
+    MSEke= np.zeros(M*n_iters)
+    MSEbe= np.zeros(M*n_iters)
+    MSEki= np.zeros(M*n_iters)
+    MSEbi= np.zeros(M*n_iters)
+    hfit= np.zeros(M*n_iters)
 
     indicator= None
 
     window= 10
 
-    V= np.ones(p['N_lim'])*-60
-    ycurr = y[:,0]
+    for j in range(n_iters):
+        Vin= np.ones(p['N_lim'])*-60
+        ycurr = y[:,0]
 
-    for i in range(M):
+        for i in range(M):
 
-        if i==0:
-            MSEke= jax.ops.index_update(MSEke, i, MSE(model.theta['ke'], ground_theta['ke']))
-            MSEbe= jax.ops.index_update(MSEbe, i, MSE(model.theta['be'], ground_theta['be']))
-            MSEki= jax.ops.index_update(MSEki, i, MSE(model.theta['ki'], ground_theta['ki']))
-            MSEbi= jax.ops.index_update(MSEbi, i, MSE(model.theta['bi'], ground_theta['bi']))
-            continue
+            if i < window:
+                MSEke= jax.ops.index_update(MSEke, i +j*M, MSE(model.theta['ke'], ground_theta['ke']))
+                MSEbe= jax.ops.index_update(MSEbe, i +j*M, MSE(model.theta['be'], ground_theta['be']))
+                MSEki= jax.ops.index_update(MSEki, i + j*M, MSE(model.theta['ki'], ground_theta['ki']))
+                MSEbi= jax.ops.index_update(MSEbi, i + j*M, MSE(model.theta['bi'], ground_theta['bi']))
+                hfit = jax.ops.index_update(hfit, i+j*M, np.mean(model.theta['h']))
+                continue
 
-        if i<= window:
-            yfit = y[:, 0:i]
-            sfit = s[:, 0:i]
+            else:
+                yfit = y[:, i-window:i]
+                sfit = s[:, i-window:i]
 
-        else:
-            yfit = y[:, i-window:i]
-            sfit = s[:, i-window:i]
+            Vret, ycurr = model.fit(yfit, sfit, Vin, ycurr, return_ll=False, indicator=onp.ones(y.shape))
+            Vin = Vret
 
-        V, ycurr = model.fit(yfit, sfit, V, ycurr, return_ll=False, indicator=onp.ones(y.shape))
+            MSEke= jax.ops.index_update(MSEke, i+j*M, MSE(model.theta['ke'], ground_theta['ke']))
+            MSEbe= jax.ops.index_update(MSEbe, i+j*M, MSE(model.theta['be'], ground_theta['be']))
+            MSEki= jax.ops.index_update(MSEki, i+j*M, MSE(model.theta['ki'], ground_theta['ki']))
+            MSEbi= jax.ops.index_update(MSEbi, i+j*M, MSE(model.theta['bi'], ground_theta['bi']))
+            hfit = jax.ops.index_update(hfit, i+j*M, np.mean(model.theta['h']))
 
-        MSEke= jax.ops.index_update(MSEke, i, MSE(model.theta['ke'], ground_theta['ke']))
-        MSEbe= jax.ops.index_update(MSEbe, i, MSE(model.theta['be'], ground_theta['be']))
-        MSEki= jax.ops.index_update(MSEki, i, MSE(model.theta['ki'], ground_theta['ki']))
-        MSEbi= jax.ops.index_update(MSEbi, i, MSE(model.theta['bi'], ground_theta['bi']))
+        llfin, r, V= model.ll_r(y,s, p)
+        print(llfin)
 
-        if i%5000 ==0:
-            print(i)
+    '''
 
-    llfin, r = model.ll_r(y,s, p)
-    print(llfin)
-
-    fig, axs= plt.subplots(2, 2)
+    fig, axs= plt.subplots(3, 2)
     fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
     axs[0][0].plot(MSEke)
     axs[0][0].set_title('MSEke')
@@ -460,16 +401,64 @@ if __name__ == '__main__':  # Test
     axs[1][0].set_title('MSEki')
     axs[1][1].plot(MSEbi)
     axs[1][1].set_title('MSEbi')
+    axs[2][0].plot(hfit)
+    axs[2][0].set_title('Average of h')
     plt.show()
+    '''
 
-
-    llfin, r = model.ll_r(y,s, p)
+    llfin, r, V= model.ll_r(y,s, p)
 
     r_ground= onp.loadtxt('rates_sample.txt')
+    V_ground = onp.loadtxt('volt_sample.txt')
 
     indicator= onp.ones(y.shape)
 
-    
+    '''
+
+    plt.subplot(2, 2, 1)
+    plt.plot(r[25,:]*p['dt'])
+    plt.title('Model fit firing rate for neuron 25')
+    plt.subplot(2,2,2)
+    plt.plot(V[25,:])
+    plt.title('Model fit voltage for neuron 25')
+    plt.subplot(2,2,3)
+    plt.plot(r_ground[25,:]*p['dt'])
+    plt.title('Ground truth firing rate for neuron 25')
+    plt.subplot(2,2,4)
+    plt.plot(V_ground[25,:])
+    plt.title('Ground truth voltage for neuron 25')
+    plt.show()
+
+    plt.subplot(2, 2, 1)
+    plt.plot(r[5,:]*p['dt'])
+    plt.title('Model fit firing rate for neuron 5')
+    plt.subplot(2,2,2)
+    plt.plot(V[5,:])
+    plt.title('Model fit voltage for neuron 5')
+    plt.subplot(2,2,3)
+    plt.plot(r_ground[5,:]*p['dt'])
+    plt.title('Ground truth firing rate for neuron 5')
+    plt.subplot(2,2,4)
+    plt.plot(V_ground[5,:])
+    plt.title('Ground truth voltage for neuron 5')
+    plt.show()
+
+    plt.subplot(2, 2, 1)
+    plt.plot(r[30,:]*p['dt'])
+    plt.title('Model fit firing rate for neuron 30')
+    plt.subplot(2,2,2)
+    plt.plot(V[30,:])
+    plt.title('Model fit voltage for neuron 30')
+    plt.subplot(2,2,3)
+    plt.plot(r_ground[30,:]*p['dt'])
+    plt.title('Ground truth firing rate for neuron 30')
+    plt.subplot(2,2,4)
+    plt.plot(V_ground[30,:])
+    plt.title('Ground truth voltage for neuron 30')
+    plt.show()
+
+    '''
+
     fig, (ax1, ax2) = plt.subplots(2)
     u1 = ax1.imshow(r[:,:])
     ax1.grid(0)
@@ -497,4 +486,9 @@ if __name__ == '__main__':  # Test
     print(model.theta['bi'])
     print(model.theta['h'])
 
+
+    with open('theta_model.pickle', 'wb') as f:
+        pickle.dump(model.theta, f)
+
+    
 

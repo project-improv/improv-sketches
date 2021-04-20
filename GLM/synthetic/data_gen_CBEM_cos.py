@@ -6,6 +6,9 @@ import networkx as nx
 import numba
 import seaborn as sns
 import numpy as np
+import scipy
+from numpy import matlib as mb
+import time
 
 from GLM.utils import *
 
@@ -25,6 +28,16 @@ class DataGenerator:
         self.params = params.copy()
         self.params_θ = None if params_theta is None else params_theta.copy()
         self.theta = self._gen_theta(**self.params_θ)
+
+        self.Qstim, self.Qbasstim, self.ihtstim = self.makeCosBasis(10, 1, np.asarray([0,150]), 0.02)
+        self.Qspike, self.Qbasspike, self.ihtspike = self.makeCosBasis(7, 1, np.asarray([2,90]), 0.02)
+
+        self.Qbasspike[0:2][:] = 0
+
+        refract = np.zeros((100, 2))
+        refract[0:2][:]=1
+
+        self.Qbasspike = np.hstack((refract, self.Qbasspike))
 
         self.i = 0
 
@@ -72,8 +85,8 @@ class DataGenerator:
         # baseline rates
         theta['be'] = np.zeros(N)
         theta['bi'] = np.zeros(N)
-        theta['be'][:] = base  # 2 * np.random.rand(np.sum(excinh == 1)) - 2
-        theta['bi'][:] = base  # 1 + np.random.rand(np.sum(excinh == -1))
+        theta['be'][:] = 0  # 2 * np.random.rand(np.sum(excinh == 1)) - 2
+        theta['bi'][:] = 0  # 1 + np.random.rand(np.sum(excinh == -1))
 
 
         # history filter over time dh
@@ -82,6 +95,8 @@ class DataGenerator:
 
         theta['ke'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
         theta['ki'] = self.gen_theta_k() if 'ds' in self.params else np.zeros((N, 1))
+
+        theta['ps'] = self.gen_theta_ps()
 
         return theta
 
@@ -99,8 +114,8 @@ class DataGenerator:
         N = self.params['N']
         ds = self.params['ds']
 
-        base = np.random.rand(N, ds)
-        base = (base-0.5)*2
+        base = np.random.rand(N, 10)/10
+        base = (base-0.05)*2
 
         #center = ds // 2
         #bell = np.array([r * np.exp(-((i - center) ** 2 / sd ** 2)) for i in range(ds)])
@@ -110,6 +125,17 @@ class DataGenerator:
 
         return base
 
+    def gen_theta_ps(self):
+
+        N= self.params['N']
+
+        refract = np.zeros((N, 2))
+        refract[:,0]= -1
+        refract[:,1]= -0.2
+        base = -np.random.rand(N, 7)/20
+
+        return np.hstack((refract, base))
+
     def gen_spikes(self, params=None, **kwargs):
         """
         Wrapper for self._gen_spikes. Need for dealing with cases without stimulus input.
@@ -117,12 +143,13 @@ class DataGenerator:
         p = self.params.copy() if params is None else params.copy()
         if 'ds' not in p:
             p['ds'] = 1
-        return self._gen_spikes(self.theta['h'], self.theta['be'], self.theta['bi'], self.theta['ke'], self.theta['ki'],
-                p['dt'], p['dh'], p['ds'], p['N'], p['M'], **kwargs)
+        return self._gen_spikes(self.theta['h'], self.theta['be'], self.theta['bi'], self.theta['ke'], self.theta['ki'], self.theta['ps'],
+                p['dt'], p['dh'], p['ds'], p['N'], p['M'], self.Qbasstim, self.Qbasspike, **kwargs)
+
 
     @staticmethod
     @numba.jit(nopython=True)
-    def _gen_spikes(h, be, bi, ke, ki, dt, dh, ds, N, M, seed=2, limit=20., stim_int=10):
+    def _gen_spikes(h, be, bi, ke, ki, ps, dt, dh, ds, N, M, Q, Qspike, seed=2, limit=20., stim_int=10):
         '''
         Generates spike counts from the model
 
@@ -150,8 +177,7 @@ class DataGenerator:
 
         r = np.zeros((N, M))  # rates
         y = np.zeros((N, M))  # spikes
-        s = np.zeros((ds, M))
-        sret = np.zeros(M)
+        s = np.zeros(M)
         #s = np.random.rand(ds, M)
         V = np.zeros((N, M))
 
@@ -160,40 +186,43 @@ class DataGenerator:
         V[:, 0] = Vinit
         y[:, 0] = np.array([np.random.poisson(r[i, 0]) for i in range(N)])
 
+        for t in range(M):
+            stim_curr = (t//stim_int) %ds
+            s[t] = (stim_curr-4)/10
+
+
         # simulate the model for next M samples (time steps)
-        for t in range(M):  # step through time
 
-            stim_curr = (t // stim_int) % ds
-            s[stim_curr, t] = 1.
+        stimE = ke @ np.transpose(Q) #NX100
+        stimI = ki @ np.transpose(Q)
 
-            sret[t] = (stim_curr-4)/80
+        spikefilt = ps @ np.transpose(Qspike) #NX90
 
-            for i in range(N):  # step through neurons
-                # compute model firing rate
-                if t == 0:
+        for i in range(N):  # step through neurons
+            # compute model firing rate
+
+            stimbaseE = np.convolve(stimE[i, :], s) + be[i] #convolve produces M size array
+            stimbaseI = np.convolve(stimI[i, :], s) + bi[i]
+
+            ge= np.log(1+np.exp(stimbaseE)) #M size
+            gi= np.log(1+np.exp(stimbaseI))
+
+            gtot= ge +gi + gl  #M size
+            Itot= ge*Ee +gi*Ei +gl*El  
+
+            for t in range(M):
+                spikeconv = np.fliplr(spikefilt)
+                if t==0:
                     hist = 0
+                elif t < 100:
+                    hist = np.sum(np.multiply(y[i, 0:t], spikeconv[i, -t:]))
                 else:
-                    hist = y[i, t-1]*-10
-
-                if t == 0:
-                    stimE = 0
-                    stimI = 0
-                else:
-                    stimE = ke[i, stim_curr] + be[i]
-                    stimI = ki[i, stim_curr] + bi[i]
-                    #stimE = ke[i, :]@s[:,t] +be[i]
-                    #stimI = ke[i, :]@s[:,t] +bi[i]
-
-                ge= np.log(1+np.exp(stimE))
-                gi= np.log(1+np.exp(stimI))
-
-                gtot= ge +gi + gl 
-                Itot= ge*Ee +gi*Ei +gl*El  
+                    hist = np.sum(np.multiply(y[i, t-100:t], spikeconv[i,:]))
 
                 if t ==0:
                     V[i, t] = Vinit
                 else:
-                    V[i, t] = np.exp(-dt*gtot)*(V[i, t-1]-Itot/gtot)+Itot/gtot 
+                    V[i, t] = np.exp(-dt*gtot[t])*(V[i, t-1]-Itot[t]/gtot[t])+Itot[t]/gtot[t] 
 
                 V[i, t]= V[i, t] + hist
 
@@ -201,7 +230,7 @@ class DataGenerator:
 
                 y[i, t] = np.random.poisson(r[i, t] * dt)
 
-        return r, y, sret, V
+        return r, y, s, V
 
 
     def plot_theta(self, name):
@@ -212,12 +241,41 @@ class DataGenerator:
         plt.colorbar()
         plt.show()
 
+    def makeCosBasis(self, nb, dt, endpoints, b):
+    
+        yrange = np.log(endpoints+b+10**-20)
+        db = np.diff(yrange)/(nb-1)
+        ctrs = np.arange(yrange[0], yrange[1]+0.9*db, db)
+        mxt = 100
+        iht = np.expand_dims(np.arange(0,mxt,dt),axis=1)
+        nt = iht.shape[0]
+
+        nliniht = np.log(iht+b+10**-20)
+
+        x = mb.repmat(nliniht, 1, nb)
+        c = mb.repmat(ctrs, nt, 1)
+
+        ihbasis = self.ff(x, c, db)
+
+        return scipy.linalg.orth(ihbasis), ihbasis, iht
+
+    def ff(self, x, c, dc):
+
+        radians= (x-c)*np.pi/dc/2
+
+        mini = np.minimum(np.pi, radians)
+        maxi = np.maximum(-np.pi, mini)
+
+        ret= (np.cos(maxi)+1)/2
+
+        return ret
+
 
 if __name__ == '__main__':
     n = 50
     dh = 2
     ds = 8
-    m = 1000
+    m = 5000
     dt = 0.001
 
     p = {
@@ -238,16 +296,51 @@ if __name__ == '__main__':
     }
 
     gen = DataGenerator(params=p, params_theta=params_θ)
+    
+    Q, Qbas, iht = gen.makeCosBasis(7, 1, np.asarray([2,90]), 0.02)
 
+    '''
+
+    plt.subplot(2,1,1)
+    for i in range(Q.shape[1]):
+        plt.plot(iht, Q[:,i])
+    plt.title('Orthogonal basis for cosine bumps')
+    plt.xlabel('time in ms')
+
+    plt.subplot(2,1,2)
+    for i in range(Qbas.shape[1]):
+        plt.plot(iht, Qbas[:,i])
+    plt.title('Stimulus basis cosine bumps')
+    plt.xlabel('time in ms')
+    plt.show()
+    
+    '''
     # %% Save θ
-    #with open('theta_dict.pickle', 'wb') as f:
-    #    pickle.dump(gen.theta, f)
-    #with open('params_dict.pickle', 'wb') as f:
-    #    pickle.dump(p, f)
-    #print('Simulating model...')
+    with open('theta_dict.pickle', 'wb') as f:
+        pickle.dump(gen.theta, f)
+    with open('params_dict.pickle', 'wb') as f:
+        pickle.dump(p, f)
+    print('Simulating model...')
+
+    start_time = time.time()
 
     # %% Generate data
     r, y, s, V = gen.gen_spikes(seed=0)
+
+
+    plt.subplot(2,1,1)
+    plt.plot(gen.theta['ke'][25,:]@ np.transpose(gen.Qbasstim))
+    plt.title('Excitatory stimulus filter')
+    plt.xlabel('time in ms')
+
+    plt.subplot(2,1,2)
+    plt.plot(gen.theta['ki'][25,:]@ np.transpose(gen.Qbasstim))
+    plt.title('Inhibitory stimulus filter')
+    plt.xlabel('time in ms')
+    plt.show()
+    
+
+    print("--- %s seconds ---" % (time.time() - start_time))
 
     print('log_likelihood= '+str(-np.mean(np.sum(y*np.log(1-np.exp(-r*dt))-(1-y)*r*dt, axis=1))))
 
@@ -267,8 +360,9 @@ if __name__ == '__main__':
     np.savetxt('volt_sample.txt', data['V'])
 
     fig, ax = plt.subplots(dpi=100)
-    u = ax.imshow(V[:, :])
+    u = ax.imshow(r[:, :])
     ax.grid(0)
     fig.colorbar(u)
-    ax.set_title('Synthetic data with stim')
+    ax.set_title('Synthetic Spiking Data')
     plt.show()
+    
