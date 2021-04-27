@@ -157,31 +157,26 @@ class GLMJax:
         return self._ll(self.theta, self.params, *self._check_arrays(y, s, indicator))
 
     @profile
-    def fit(self, y, s, Vin, ycurr, return_ll=False, indicator=None):
+    def fit(self, y, s, Vin, ycurr, indicator=None):
         """
         Fit model. Returning log-likelihood is ~2 times slower.
         """
-        if return_ll:
-            self._θ, ll = GLMJax._fit_ll(self._θ, self.params, self.opt_update, self.get_params,
-                                                    self.iter, *self._check_arrays(y, s, indicator))
-            self.iter += 1
-            return ll
-        else:
-            self._θ, Vret, y = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
-                                             self.iter, Vin, ycurr, self.Qbasspike, self.Qbasstim, *self._check_arrays(y, s, indicator))
-            self.iter += 1
-            return Vret, y
 
-    @staticmethod
-    @partial(jit, static_argnums=(1, 2, 3))
-    def _fit_ll(θ: Dict, p: Dict, opt_update, get_params, iter, Vin, ycurr, m, n, y, s, indicator):
-        ll, Δ = value_and_grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, indicator)
-        θ = opt_update(iter, Δ, θ)
-        return θ, ll
+        self._θ, Vret, y = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
+                                            self.iter, Vin, ycurr, self.Qbasspike, self.Qbasstim, *self._check_arrays(y, s, indicator))
+        self.iter += 1
+        return Vret, y
 
     @staticmethod
     @partial(jit, static_argnums=(1, 2, 3, 4))
     def _fit(θ: Dict, p: Dict, rpf, opt_update, get_params, iter, Vin, ycurr, Qspike, Qstim, m, n, y, s, indicator):
+
+        '''
+        Calculates log likelihood, computes gradient, and performs gradient step/
+        This function additionally computes the final voltage and spiking information
+        that is needed when the window shifts
+        '''
+
         for i in range(rpf):
 
             Δ = grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, Vin, ycurr, Qspike, Qstim, indicator)
@@ -247,7 +242,6 @@ class GLMJax:
     def _ll(θ: Dict, p: Dict, m, n, y, s, V, ycurr, Qspike, Qstim, indicator) -> DeviceArray:
         """
         Return negative log-likelihood of data given model.
-        ℓ1 and ℓ2 regularizations are specified in params.
         """
 
         El = -60
@@ -272,7 +266,7 @@ class GLMJax:
         def V_loop(y, V, s):
 
             with loops.Scope() as sc:
-                sc.r= np.zeros((y.shape[0], 10))
+                sc.r= np.zeros((y.shape[0], y.shape[1]-100))
 
                 for t in range(sc.r.shape[1]):
 
@@ -302,9 +296,15 @@ class GLMJax:
 
         r = V_loop(y, V, s)
 
-        return -np.mean(np.sum(y[:,-10:]*np.log(1-np.exp(-r*p['dt'])+0.000001)-(1-y[:,-10:])*r*p['dt'], axis=1))
+        return -np.mean(np.sum(y[:,-y.shape[1]+100:]*np.log(1-np.exp(-r*p['dt'])+0.000001)-(1-y[:,-y.shape[1]+100:])*r*p['dt'], axis=1))
 
-    def ll_step(self, y, s, p, Vin):
+    def ll_step(self, y, s, p, Vin, window):
+
+        '''
+        Calculates the intermediate log likelihood for each window and returns the voltage and firing rate
+        for that window as well. This is necessary because you cannot return objects out of a statically 
+        defined method in JAX. This allows us to see what is happening as the algorithm progress
+        '''
         
         El = -60
         Ee = 0
@@ -322,15 +322,15 @@ class GLMJax:
         bi= θ['bi']
         ps= θ['ps']
 
-        r= np.zeros((y.shape[0], 10))
-        V= np.zeros((y.shape[0], 10))
+        r= np.zeros((y.shape[0],window))
+        V= np.zeros((y.shape[0],window))
 
         spikefilt = ps @ np.transpose(self.Qbasspike)
 
         stimE = ke @ np.transpose(self.Qbasstim) #NX150
         stimI = ki @ np.transpose(self.Qbasstim)
 
-        for t in range(10):
+        for t in range(window):
 
             if t==0:
                 Vnow= Vin
@@ -356,9 +356,14 @@ class GLMJax:
             V = jax.ops.index_update(V, jax.ops.index[:,t], Vcurr)
             
             r = jax.ops.index_update(r, jax.ops.index[:,t], c*np.log(1+np.exp(a*Vcurr+b)))
-        return -np.mean(np.sum(y[:, -10:]*np.log(1-np.exp(-r*p['dt'])+0.00001)-(1-y[:, -10:])*r*p['dt'], axis=1)), r, V
+        return -np.mean(np.sum(y[:,-window:]*np.log(1-np.exp(-r*p['dt'])+0.000001)-(1-y[:,-window:])*r*p['dt'], axis=1)), r, V
 
     def ll_full(self, y, s, p):
+
+        '''
+        Calculates the full log likelihood for all data.
+        Takes a very long time so should only be done once at the end
+        '''
         
         El = -60
         Ee = 0
@@ -539,6 +544,7 @@ if __name__ == '__main__':  # Test
     M = 5000
     dh = 2
     ds = 8
+
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.001, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1': 4, 'λ2':0.0}
 
     with open('theta_dict.pickle', 'rb') as f:
@@ -585,7 +591,7 @@ if __name__ == '__main__':  # Test
     b = 53*a
     c = 90
 
-    window= 10
+    window= 12
 
     Vcheck = np.ones((N,M))*-60
     rcheck = c*np.log(1+np.exp(a*Vcheck*-60+b))
@@ -598,7 +604,7 @@ if __name__ == '__main__':  # Test
 
             print(i)
 
-            if i < 110:
+            if i < 100+window:
 
                 #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 30, i)
 
@@ -612,12 +618,11 @@ if __name__ == '__main__':  # Test
 
             elif i<1000:
 
-                print(model.theta['ke'][30,0:10])
 
-                yfit = y[:, i-110:i]
-                sfit = s[i-110:i]
+                yfit = y[:, i-100-window:i]
+                sfit = s[i-100-window:i]
 
-                llres, rres, Vres= model.ll_step(yfit, sfit, p, Vin)
+                llres, rres, Vres= model.ll_step(yfit, sfit, p, Vin, window)
 
                 Vcheck = jax.ops.index_update(Vcheck, jax.ops.index[:,i-1], Vres[:,-1])
 
@@ -631,12 +636,11 @@ if __name__ == '__main__':  # Test
 
 
             else:
-                print(model.theta['ke'][30,0:10])
 
-                yfit = y[:, i-110:i]
-                sfit = s[i-110:i]
+                yfit = y[:, i-100-window:i]
+                sfit = s[i-100-window:i]
 
-                llres, rres, Vres = model.ll_step(yfit, sfit, p, Vin)
+                llres, rres, Vres = model.ll_step(yfit, sfit, p, Vin, window)
 
                 Vcheck = jax.ops.index_update(Vcheck, jax.ops.index[:,0:999], Vcheck[:,1:1000])
                 Vcheck = jax.ops.index_update(Vcheck, jax.ops.index[:,999], Vres[:,-1])
@@ -654,7 +658,7 @@ if __name__ == '__main__':  # Test
 
                 
 
-            Vret, ycurr = model.fit(yfit, sfit, Vin, ycurr, return_ll=False, indicator=onp.ones(y.shape))
+            Vret, ycurr = model.fit(yfit, sfit, Vin, ycurr, indicator=onp.ones(y.shape))
             Vin = Vret
 
 

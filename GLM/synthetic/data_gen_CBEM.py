@@ -276,8 +276,6 @@ class DataGenerator:
 
 if __name__ == '__main__':
     n = 50
-    dh = 2
-    ds = 8
     m = 5000
     dt = 0.001
 
@@ -330,7 +328,7 @@ if __name__ == '__main__':
     # %% Generate data
     r, y, s, V = gen.gen_spikes(seed=0)
 
-
+    '''
     plt.subplot(2,1,1)
     plt.plot(gen.theta['ke'][25,:]@ np.transpose(gen.Qbasstim))
     plt.title('Excitatory stimulus filter')
@@ -342,7 +340,7 @@ if __name__ == '__main__':
     plt.xlabel('time in ms')
     plt.show()
     
-
+    '''
     print("--- %s seconds ---" % (time.time() - start_time))
 
     print('log_likelihood= '+str(-np.mean(np.sum(y*np.log(1-np.exp(-r*dt))-(1-y)*r*dt, axis=1))))
