@@ -6,6 +6,8 @@ from typing import Dict, Tuple
 
 import jax.numpy as np
 import numpy as onp
+from numpy import matlib as mb
+import scipy
 from jax import devices, jit, random, grad, value_and_grad
 import jax
 from jax.config import config
@@ -63,8 +65,6 @@ class GLMJax:
         if theta is None:
             raise ValueError('θ not specified.')
         else:
-            assert theta['ke'].shape == (p['N_lim'], p['ds'])
-            assert theta['ki'].shape == (p['N_lim'], p['ds'])
             assert (theta['be'].shape == (p['N_lim'],)) or (theta['be'].shape == (p['N_lim'], 1))
             assert (theta['bi'].shape == (p['N_lim'],)) or (theta['bi'].shape == (p['N_lim'], 1))
 
@@ -91,8 +91,15 @@ class GLMJax:
         self.current_M = 0
         self.iter = 0
 
-        self.V = np.ones((60,1))*-60
-        self.y = np.zeros((N, 1))
+        self.Qstim, self.Qbasstim, self.ihtstim = self.makeCosBasis(10, 1, np.asarray([0,150]), 0.02)
+        self.Qspike, self.Qbasspike, self.ihtspike = self.makeCosBasis(7, 1, np.asarray([2,90]), 0.02)
+
+        self.Qbasspike = jax.ops.index_update(self.Qbasspike, jax.ops.index[0:2,:], 0)
+
+        refract = np.zeros((100, 2))
+        refract = jax.ops.index_update(refract, jax.ops.index[0:2,:], 1)
+
+        self.Qbasspike = np.hstack((refract, self.Qbasspike))
 
     @profile
     def _check_arrays(self, y, s, indicator=None) -> Tuple[onp.ndarray]:
@@ -117,6 +124,35 @@ class GLMJax:
 
         return self.current_M, self.current_N, y, s, indicator
 
+    def makeCosBasis(self, nb, dt, endpoints, b):
+        
+        yrange = np.log(endpoints+b+10**-20)
+        db = np.diff(yrange)/(nb-1)
+        ctrs = np.arange(yrange[0], yrange[1]+0.9*db, db)
+        mxt = 100
+        iht = np.expand_dims(np.arange(0,mxt,dt),axis=1)
+        nt = iht.shape[0]
+
+        nliniht = np.log(iht+b+10**-20)
+
+        x = mb.repmat(nliniht, 1, nb)
+        c = mb.repmat(ctrs, nt, 1)
+
+        ihbasis = self.ff(x, c, db)
+
+        return scipy.linalg.orth(ihbasis), ihbasis, iht
+
+    def ff(self, x, c, dc):
+    
+        radians= (x-c)*np.pi/dc/2
+
+        mini = np.minimum(np.pi, radians)
+        maxi = np.maximum(-np.pi, mini)
+
+        ret= (np.cos(maxi)+1)/2
+
+        return ret
+
     def ll(self, y, s, indicator=None):
         return self._ll(self.theta, self.params, *self._check_arrays(y, s, indicator))
 
@@ -132,7 +168,7 @@ class GLMJax:
             return ll
         else:
             self._θ, Vret, y = GLMJax._fit(self._θ, self.params, self.rpf, self.opt_update, self.get_params,
-                                             self.iter, Vin, ycurr, *self._check_arrays(y, s, indicator))
+                                             self.iter, Vin, ycurr, self.Qbasspike, self.Qbasstim, *self._check_arrays(y, s, indicator))
             self.iter += 1
             return Vret, y
 
@@ -145,10 +181,10 @@ class GLMJax:
 
     @staticmethod
     @partial(jit, static_argnums=(1, 2, 3, 4))
-    def _fit(θ: Dict, p: Dict, rpf, opt_update, get_params, iter, Vin, ycurr, m, n, y, s, indicator):
+    def _fit(θ: Dict, p: Dict, rpf, opt_update, get_params, iter, Vin, ycurr, Qspike, Qstim, m, n, y, s, indicator):
         for i in range(rpf):
 
-            Δ = grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, Vin, ycurr, indicator)
+            Δ = grad(GLMJax._ll)(get_params(θ), p, m, n, y, s, Vin, ycurr, Qspike, Qstim, indicator)
             θ = opt_update(iter, Δ, θ)
 
         theta = get_params(θ)
@@ -157,13 +193,21 @@ class GLMJax:
         Ei = -80
         gl = 0.5
 
-        cal_hist = ycurr*theta['h']
+        spikefilt = theta['ps'] @ np.transpose(Qspike)
 
-        stim_exc = theta['ke'] @ s
-        stim_inh = theta['ki'] @ s
+        yuse = y[:,0:100]
+        cal_hist = np.sum(np.multiply(yuse, np.fliplr(spikefilt)), axis=1)
 
-        ge = np.log(1+ np.exp(stim_exc + theta['be']))
-        gi = np.log(1+ np.exp(stim_inh + theta['bi']))
+        stimE = ke @ np.transpose(Qstim) #NX150
+        stimI = ki @ np.transpose(Qstim)
+
+        suse = np.reshape(s[0:100], (1, 100))
+
+        stimbaseE = np.sum(np.multiply(suse, np.fliplr(stimE)), axis=1) + theta['be'] #convolve produces M size array
+        stimbaseI = np.sum(np.multiply(suse, np.fliplr(stimI)), axis=1) + theta['bi']
+
+        ge = np.log(1+ np.exp(stimbaseE))
+        gi = np.log(1+ np.exp(stimbaseI))
 
         gtot = gl + ge +gi
         Itot = gl*El + ge*Ee + gi*Ei
@@ -185,7 +229,6 @@ class GLMJax:
         print(f"Increasing neuron limit to {2 * N_lim}.")
         self._θ = self.theta
 
-        self._θ['h'] = onp.concatenate((self._θ['h'], onp.zeros((N_lim, self.params['dh']))), axis=0)
         self._θ['be'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
         self._θ['ke'] = onp.concatenate((self._θ['k'], onp.zeros((N_lim, self.params['ds']))), axis=0)
         self._θ['bi'] = onp.concatenate((self._θ['b'], onp.zeros((N_lim, 1))), axis=0)
@@ -201,7 +244,7 @@ class GLMJax:
 
     @staticmethod
     @partial(jit, static_argnums=(1,))
-    def _ll(θ: Dict, p: Dict, m, n, y, s, V, ycurr, indicator) -> DeviceArray:
+    def _ll(θ: Dict, p: Dict, m, n, y, s, V, ycurr, Qspike, Qstim, indicator) -> DeviceArray:
         """
         Return negative log-likelihood of data given model.
         ℓ1 and ℓ2 regularizations are specified in params.
@@ -210,7 +253,7 @@ class GLMJax:
         El = -60
         Ee = 0
         Ei = -80
-        gl = np.ones(y.shape)*0.5
+        gl = np.ones((y.shape[0],1))*0.5
         a = 0.45
         b = 53*a
         c = 90
@@ -219,30 +262,37 @@ class GLMJax:
         ki= θ['ki']
         be= θ['be']
         bi= θ['bi']
+        ps= θ['ps']
 
-        stim_exc = ke @ s
-        stim_inh = ki @ s
+        spikefilt = ps @ np.transpose(Qspike)
 
-        ge = np.log(1+ np.exp(stim_exc + be))
-        gi = np.log(1+ np.exp(stim_inh + bi))
+        stimE = ke @ np.transpose(Qstim) #NX150
+        stimI = ki @ np.transpose(Qstim)
 
-        gtot = gl + ge +gi
-        Itot = gl*El + ge*Ee + gi*Ei
-
-        def V_loop(y, V, ycurr, gtot, Itot):
+        def V_loop(y, V, s):
 
             with loops.Scope() as sc:
-                sc.r= np.zeros(y.shape)
+                sc.r= np.zeros((y.shape[0], 10))
 
                 for t in range(sc.r.shape[1]):
 
                     for _ in sc.cond_range(t==0):
                         Vnow= V
-                        cal_hist = θ['h']*ycurr
+                        cal_hist = np.sum(np.multiply(y[:,t:t+100], np.fliplr(spikefilt)), axis=1)
 
-                    for _ in sc.cond_range(t!=1):
+                    for _ in sc.cond_range(t!=0):
+
+                        stimbaseE = np.sum(np.multiply(np.reshape(s[t:t+100], (1,100)), np.fliplr(stimE)), axis=1) 
+                        stimbaseI = np.sum(np.multiply(np.reshape(s[t:t+100], (1,100)), np.fliplr(stimI)), axis=1) 
+
+                        ge = np.log(1+ np.exp(stimbaseE +be))
+                        gi = np.log(1+ np.exp(stimbaseI +bi))
+
+                        gtot = gl + ge + gi 
+                        Itot = gl*El + ge*Ee + gi*Ei
+
                         Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]), (V-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
-                        cal_hist = np.multiply(θ['h'],y[:,t-1])
+                        cal_hist = np.sum(np.multiply(y[:,t:t+100], np.fliplr(spikefilt)), axis=1)
 
                     V = Vnow+cal_hist
 
@@ -250,11 +300,11 @@ class GLMJax:
 
                 return sc.r 
 
-        r = V_loop(y, V, ycurr, gtot, Itot)
+        r = V_loop(y, V, s)
 
-        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1))
+        return -np.mean(np.sum(y[:,-10:]*np.log(1-np.exp(-r*p['dt'])+0.000001)-(1-y[:,-10:])*r*p['dt'], axis=1))
 
-    def ll_r(self, y, s, p):
+    def ll_step(self, y, s, p, Vin):
         
         El = -60
         Ee = 0
@@ -270,36 +320,126 @@ class GLMJax:
         ki= θ['ki']
         be= θ['be']
         bi= θ['bi']
+        ps= θ['ps']
 
-        r= np.zeros((p['N_lim'], p['M_lim']))
-        V= np.zeros((p['N_lim'], p['M_lim']))
+        r= np.zeros((y.shape[0], 10))
+        V= np.zeros((y.shape[0], 10))
 
-        stim_exc = ke @ s
-        stim_inh = ki @ s
+        spikefilt = ps @ np.transpose(self.Qbasspike)
 
-        ge = np.log(1+ np.exp(stim_exc + be))
-        gi = np.log(1+ np.exp(stim_inh + bi))
+        stimE = ke @ np.transpose(self.Qbasstim) #NX150
+        stimI = ki @ np.transpose(self.Qbasstim)
 
-        gtot = gl + ge +gi
-        Itot = gl*El + ge*Ee + gi*Ei
-
-        for t in range(p['M_lim']):
+        for t in range(10):
 
             if t==0:
-                Vnow = np.ones(p['N_lim'])*-60
-                cal_hist = θ['h']*0
+                Vnow= Vin
+                cal_hist = np.sum(np.multiply(y[:,t:t+100], np.fliplr(spikefilt)), axis=1)
 
             else:
-                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V[:,t-1]-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
-                cal_hist = np.multiply(θ['h'],y[:,t-1])
+
+                stimbaseE = np.sum(np.multiply(np.reshape(s[t:t+100], (1,100)), np.fliplr(stimE)), axis=1)
+                stimbaseI = np.sum(np.multiply(np.reshape(s[t:t+100], (1,100)), np.fliplr(stimI)), axis=1) 
+
+                ge = np.log(1+ np.exp(stimbaseE + be))
+                gi = np.log(1+ np.exp(stimbaseI + bi))
+
+                gtot = gl + ge + gi 
+                Itot = gl*El + ge*Ee + gi*Ei
+
+
+                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]), (Vcurr-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
+                cal_hist = np.sum(np.multiply(y[:,t:t+100], np.fliplr(spikefilt)), axis=1)
 
             Vcurr = Vnow +cal_hist
 
             V = jax.ops.index_update(V, jax.ops.index[:,t], Vcurr)
             
             r = jax.ops.index_update(r, jax.ops.index[:,t], c*np.log(1+np.exp(a*Vcurr+b)))
+        return -np.mean(np.sum(y[:, -10:]*np.log(1-np.exp(-r*p['dt'])+0.00001)-(1-y[:, -10:])*r*p['dt'], axis=1)), r, V
 
-        return -np.mean(np.sum(y*np.log(1-np.exp(-r*p['dt']))-(1-y)*r*p['dt'], axis=1)), r, V
+    def ll_full(self, y, s, p):
+        
+        El = -60
+        Ee = 0
+        Ei = -80
+        gl = 0.5
+        a = 0.45
+        b = 53*a
+        c = 90
+
+        θ = self.theta
+
+        ke= θ['ke']
+        ki= θ['ki']
+        be= θ['be']
+        bi= θ['bi']
+        ps= θ['ps']
+
+        r= np.zeros((p['N_lim'], p['M_lim']))
+        V= np.zeros((p['N_lim'], p['M_lim']))
+
+        spikefilt = ps @ np.transpose(self.Qbasspike)
+
+        stimE = ke @ np.transpose(self.Qbasstim) #NX150
+        stimI = ki @ np.transpose(self.Qbasstim)
+
+        Vin= np.ones(p['N_lim'])*-60
+
+        for t in range(p['M_lim']):
+
+            if t<100:
+                Vnow = Vin
+                cal_hist = 0
+
+            else:
+
+                stimbaseE = np.sum(np.multiply(np.reshape(s[t-100:t], (1,100)), np.fliplr(stimE)), axis=1) + be
+                stimbaseI = np.sum(np.multiply(np.reshape(s[t-100:t], (1,100)), np.fliplr(stimI)), axis=1) + bi
+
+                ge = np.log(1+ np.exp(stimbaseE + be))
+                gi = np.log(1+ np.exp(stimbaseI + bi))
+
+                gtot = gl + ge +gi
+                Itot = gl*El + ge*Ee + gi*Ei
+
+                Vnow = np.multiply(np.exp(-p['dt']*gtot[:,t]),(V[:,t-1]-Itot[:,t]/gtot[:,t]))+Itot[:,t]/gtot[:,t]
+                cal_hist = np.sum(np.multiply(y[:,t-100:t], np.fliplr(spikefilt)), axis=1)
+
+                Vcurr = Vnow +cal_hist
+
+                V = jax.ops.index_update(V, jax.ops.index[:,t], Vcurr)
+                
+                r = jax.ops.index_update(r, jax.ops.index[:,t], c*np.log(1+np.exp(a*Vcurr+b)))
+        return -np.mean(np.sum(y[:, :]*np.log(1-np.exp(-r*p['dt'])+0.00001)-(1-y[:, :])*r*p['dt'], axis=1))
+
+    def plot_filters(self, n):
+
+        plt.subplot(3,1,1)
+        plt.plot(model.theta['ke'][n,:]@ np.transpose(self.Qbasstim))
+        plt.plot(ground_theta['ke'][n,:]@ np.transpose(self.Qbasstim))
+        plt.legend(['model', 'ground'])
+        plt.title('Excitatory stimulus filter')
+        plt.xlabel('time in ms')
+
+        plt.subplot(3,1,2)
+        plt.plot(model.theta['ki'][n,:]@ np.transpose(model.Qbasstim))
+        plt.plot(ground_theta['ki'][n,:]@ np.transpose(model.Qbasstim))
+        plt.legend(['model', 'ground'])
+        plt.title('Inhibitory stimulus filter')
+        plt.xlabel('time in ms')
+
+        plt.subplot(3,1,3)
+        plt.plot(model.theta['ps'][n,:]@ np.transpose(model.Qbasspike))
+        plt.plot(ground_theta['ps'][n,:]@ np.transpose(model.Qbasspike))
+        plt.legend(['model', 'ground'])
+        plt.title('Postspike filter')
+        plt.xlabel('time in ms')
+
+
+        plt.savefig('data/filters'+str(n)+'/'+str(i)+'.png')
+        
+        plt.clf()
 
     @property
     def theta(self) -> Dict:
@@ -320,12 +460,83 @@ def MSE(x, y):
 
     return (np.square(x - y)).mean(axis=None)
 
+def plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, n, i):
+
+    '''
+    r and V come from the model fitting, r_ground and V_ground come from the ground truth data, 
+    n is the neuron you want to look at, and i is the current time step 
+    This function plots the firing rate and voltage for both the model fit and ground truth
+    Can be used to make save frames and eventually make videos of how they change over time
+    Please make a folder called 'neuronN' for each neuron you want to look at before running
+    '''
+
+    if i < 110:
+
+        plt.subplot(2, 1, 1)
+        plt.plot(np.arange(i), c*np.log(1+np.exp(a*np.ones((i,))*-60+b)))
+        plt.plot(np.arange(i), np.reshape(r_ground[n,0:i], (i,)))
+        plt.legend(['Firing rate model', 'Firing rate ground'])
+        plt.xlabel('Time bin in ms')
+        plt.ylabel('Firing rate in spikes/s')
+
+        plt.subplot(2,1,2)
+        plt.plot(np.arange(i), np.ones((i,))*-60)
+        plt.plot(np.arange(i), np.reshape(V_ground[n, 0:i], (i,)))
+        plt.legend(['Voltage model', 'Voltage ground'])
+        plt.xlabel('Time bin in ms')
+        plt.ylabel('Voltage in mV')
+
+        plt.savefig('data/neuron'+str(n)+'/'+str(i)+'.png')
+        
+        plt.clf()
+
+    elif i<1000: 
+
+
+        plt.subplot(2, 1, 1)
+        plt.plot(np.arange(i), np.reshape(rcheck[n,0:i], (i,)))
+        plt.plot(np.arange(i), np.reshape(r_ground[n,0:i], (i,)))
+        plt.legend(['Firing rate model', 'Firing rate ground'])
+        plt.xlabel('Time bin in ms')
+        plt.ylabel('Firing rate in spikes/s')
+
+        plt.subplot(2,1,2)
+        plt.plot(np.arange(i), np.reshape(Vcheck[n, 0:i], (i,)))
+        plt.plot(np.arange(i), np.reshape(V_ground[n, 0:i], (i,)))
+        plt.legend(['Voltage model', 'Voltage ground'])
+        plt.xlabel('Time bin in ms')
+        plt.ylabel('Voltage in mV')
+
+        plt.savefig('data/neuron'+str(n)+'/'+str(i)+'.png')
+
+        plt.clf()
+
+    else:
+
+        plt.subplot(2, 1, 1)
+        plt.plot(np.arange(i), np.reshape(rcheck[n, 0:i], (i,)))
+        plt.plot(np.arange(i), np.reshape(r_ground[n, 0:i], (i,)))
+        plt.legend(['Firing rate model', 'Firing rate ground'])
+        plt.xlabel('Time bin in ms')
+        plt.ylabel('Firing rate in spikes/s')
+
+        plt.subplot(2,1,2)
+        plt.plot(np.arange(i), np.reshape(Vcheck[n, 0:i],(i,)))
+        plt.plot(np.arange(i), np.reshape(V_ground[n,0:i], (i,)))
+        plt.legend(['Voltage model', 'Voltage ground'])
+        plt.xlabel('Time bin in ms')
+        plt.ylabel('Voltage in mV')
+
+        plt.savefig('data/neuron'+str(n)+'/'+str(i)+'.png')
+
+        plt.clf()
+
 
 if __name__ == '__main__':  # Test
     key = random.PRNGKey(42)
 
     N = 50
-    M = 1000
+    M = 5000
     dh = 2
     ds = 8
     p = {'N': N, 'M': M, 'dh': dh, 'ds': ds, 'dt': 0.001, 'n': 0, 'N_lim': N, 'M_lim': M, 'λ1': 4, 'λ2':0.0}
@@ -333,31 +544,51 @@ if __name__ == '__main__':  # Test
     with open('theta_dict.pickle', 'rb') as f:
         ground_theta= pickle.load(f)
 
-    ke = ground_theta['ke']  #(onp.random.rand(N, ds)-0.5)*2 #onp.zeros((N,ds)) 
-    ki = ground_theta['ki']  #(onp.random.rand(N, ds)-0.5)*2 #onp.zeros((N,ds)) 
+    
+    base = onp.random.rand(N, 10)/10
+    base = (base-0.05)*2
 
-    be = ground_theta['be']  #onp.ones((N,1)) * 0.5 #onp.zeros((N,1))
-    bi = ground_theta['bi']  #onp.ones((N,1)) * 0.5 #onp.zeros((N,1))
+    ke = base/100 #onp.zeros((N,ds)) 
+    ki = base/100 #onp.zeros((N,ds)) 
+
+    be = onp.zeros((N,1))
+    bi = onp.zeros((N,1))
+
+    refract = np.zeros((N, 2))
+
+    refract = jax.ops.index_update(refract, jax.ops.index[:,0], -0.001)
+    refract = jax.ops.index_update(refract, jax.ops.index[:,1], -0.001)
+    postspike = -onp.random.rand(N, 7)/100
+
+    ps = np.hstack((refract, postspike))
 
     y= onp.loadtxt('data_sample.txt')
     s= onp.loadtxt('stim_sample.txt')
 
-    h= onp.ones(N)*-10.0
+    #theta = {'be': ground_theta['be'], 'ke': ground_theta['ke'], 'ki': ground_theta['ki'], 'bi': ground_theta['bi'], 'ps':ground_theta['ps']}
 
-    theta = {'be': be, 'ke': ke, 'ki': ki, 'bi': bi, 'h':h}
-    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-3})
+    theta = {'be': be, 'ke': ke, 'ki': ki, 'bi': bi, 'ps':ps}
+    model = GLMJax(p, theta, optimizer={'name': 'adam', 'step_size': 1e-2})
 
-    n_iters= 10
+    #model_verify = GLMJax(p, ground_theta, optimizer={'name': 'adam', 'step_size': 1e-2})
 
-    MSEke= np.zeros(M*n_iters)
-    MSEbe= np.zeros(M*n_iters)
-    MSEki= np.zeros(M*n_iters)
-    MSEbi= np.zeros(M*n_iters)
-    hfit= np.zeros(M*n_iters)
+    n_iters= 1
 
     indicator= None
 
+    model_ll = np.zeros(M)
+
+    r_ground= onp.loadtxt('rates_sample.txt')
+    V_ground = onp.loadtxt('volt_sample.txt')
+
+    a = 0.45
+    b = 53*a
+    c = 90
+
     window= 10
+
+    Vcheck = np.ones((N,M))*-60
+    rcheck = c*np.log(1+np.exp(a*Vcheck*-60+b))
 
     for j in range(n_iters):
         Vin= np.ones(p['N_lim'])*-60
@@ -365,127 +596,70 @@ if __name__ == '__main__':  # Test
 
         for i in range(M):
 
-            if i < window:
-                MSEke= jax.ops.index_update(MSEke, i +j*M, MSE(model.theta['ke'], ground_theta['ke']))
-                MSEbe= jax.ops.index_update(MSEbe, i +j*M, MSE(model.theta['be'], ground_theta['be']))
-                MSEki= jax.ops.index_update(MSEki, i + j*M, MSE(model.theta['ki'], ground_theta['ki']))
-                MSEbi= jax.ops.index_update(MSEbi, i + j*M, MSE(model.theta['bi'], ground_theta['bi']))
-                hfit = jax.ops.index_update(hfit, i+j*M, np.mean(model.theta['h']))
+            print(i)
+
+            if i < 110:
+
+                #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 30, i)
+
+                #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 15, i)
+                
+                #model.plot_filters(30)
+                #model.plot_filters(15)
+
+
                 continue
 
+            elif i<1000:
+
+                print(model.theta['ke'][30,0:10])
+
+                yfit = y[:, i-110:i]
+                sfit = s[i-110:i]
+
+                llres, rres, Vres= model.ll_step(yfit, sfit, p, Vin)
+
+                Vcheck = jax.ops.index_update(Vcheck, jax.ops.index[:,i-1], Vres[:,-1])
+
+                rcheck = jax.ops.index_update(rcheck, jax.ops.index[:,i-1], rres[:,-1]) 
+
+                #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 30, i)
+                #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 15, i)
+                
+                #model.plot_filters(30)
+                #model.plot_filters(15)
+
+
             else:
-                yfit = y[:, i-window:i]
-                sfit = s[:, i-window:i]
+                print(model.theta['ke'][30,0:10])
+
+                yfit = y[:, i-110:i]
+                sfit = s[i-110:i]
+
+                llres, rres, Vres = model.ll_step(yfit, sfit, p, Vin)
+
+                Vcheck = jax.ops.index_update(Vcheck, jax.ops.index[:,0:999], Vcheck[:,1:1000])
+                Vcheck = jax.ops.index_update(Vcheck, jax.ops.index[:,999], Vres[:,-1])
+
+                rcheck = jax.ops.index_update(rcheck, jax.ops.index[:,0:999], rcheck[:,1:1000])
+                rcheck = jax.ops.index_update(rcheck, jax.ops.index[:, 999], rres[:,-1])
+
+                model_ll = jax.ops.index_update(model_ll, i, llres)
+
+                #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 30, i)
+                #plot_and_save_rv(rcheck, Vcheck, r_ground, V_ground, 15, i)
+                
+                #model.plot_filters(30)
+                #model.plot_filters(15)
+
+                
 
             Vret, ycurr = model.fit(yfit, sfit, Vin, ycurr, return_ll=False, indicator=onp.ones(y.shape))
             Vin = Vret
 
-            MSEke= jax.ops.index_update(MSEke, i+j*M, MSE(model.theta['ke'], ground_theta['ke']))
-            MSEbe= jax.ops.index_update(MSEbe, i+j*M, MSE(model.theta['be'], ground_theta['be']))
-            MSEki= jax.ops.index_update(MSEki, i+j*M, MSE(model.theta['ki'], ground_theta['ki']))
-            MSEbi= jax.ops.index_update(MSEbi, i+j*M, MSE(model.theta['bi'], ground_theta['bi']))
-            hfit = jax.ops.index_update(hfit, i+j*M, np.mean(model.theta['h']))
 
-        llfin, r, V= model.ll_r(y,s, p)
-        print(llfin)
-
-    '''
-
-    fig, axs= plt.subplots(3, 2)
-    fig.suptitle('MSE for weights vs #iterations, ADAM, lr=1e-3', fontsize=12)
-    axs[0][0].plot(MSEke)
-    axs[0][0].set_title('MSEke')
-    axs[0][1].plot(MSEbe)
-    axs[0][1].set_title('MSEbe')
-    axs[1][0].plot(MSEki)
-    axs[1][0].set_title('MSEki')
-    axs[1][1].plot(MSEbi)
-    axs[1][1].set_title('MSEbi')
-    axs[2][0].plot(hfit)
-    axs[2][0].set_title('Average of h')
-    plt.show()
-    '''
-
-    llfin, r, V= model.ll_r(y,s, p)
-
-    r_ground= onp.loadtxt('rates_sample.txt')
-    V_ground = onp.loadtxt('volt_sample.txt')
-
-    indicator= onp.ones(y.shape)
-
-    '''
-
-    plt.subplot(2, 2, 1)
-    plt.plot(r[25,:]*p['dt'])
-    plt.title('Model fit firing rate for neuron 25')
-    plt.subplot(2,2,2)
-    plt.plot(V[25,:])
-    plt.title('Model fit voltage for neuron 25')
-    plt.subplot(2,2,3)
-    plt.plot(r_ground[25,:]*p['dt'])
-    plt.title('Ground truth firing rate for neuron 25')
-    plt.subplot(2,2,4)
-    plt.plot(V_ground[25,:])
-    plt.title('Ground truth voltage for neuron 25')
-    plt.show()
-
-    plt.subplot(2, 2, 1)
-    plt.plot(r[5,:]*p['dt'])
-    plt.title('Model fit firing rate for neuron 5')
-    plt.subplot(2,2,2)
-    plt.plot(V[5,:])
-    plt.title('Model fit voltage for neuron 5')
-    plt.subplot(2,2,3)
-    plt.plot(r_ground[5,:]*p['dt'])
-    plt.title('Ground truth firing rate for neuron 5')
-    plt.subplot(2,2,4)
-    plt.plot(V_ground[5,:])
-    plt.title('Ground truth voltage for neuron 5')
-    plt.show()
-
-    plt.subplot(2, 2, 1)
-    plt.plot(r[30,:]*p['dt'])
-    plt.title('Model fit firing rate for neuron 30')
-    plt.subplot(2,2,2)
-    plt.plot(V[30,:])
-    plt.title('Model fit voltage for neuron 30')
-    plt.subplot(2,2,3)
-    plt.plot(r_ground[30,:]*p['dt'])
-    plt.title('Ground truth firing rate for neuron 30')
-    plt.subplot(2,2,4)
-    plt.plot(V_ground[30,:])
-    plt.title('Ground truth voltage for neuron 30')
-    plt.show()
-
-    '''
-
-    fig, (ax1, ax2) = plt.subplots(2)
-    u1 = ax1.imshow(r[:,:])
-    ax1.grid(0)
-    fig.colorbar(u1)
-    u2 = ax2.imshow(r_ground[:,:])
-    ax2.grid(0)
-    fig.colorbar(u2)
-    ax1.set_xlabel('time steps')
-    ax2.set_xlabel('time steps')
-    ax1.set_ylabel('neurons')
-    ax2.set_ylabel('neurons')
-    ax1.set_title('Model fit, single cos')
-    ax2.set_title('Ground truth, single cos')
-    plt.show()
-    
-    onp.savetxt('rates_model.txt', r)
-
-    mse= MSE(r, r_ground)
-
-    print('MSE loss= ' +str(mse))
-
-    print(model.theta['ke'])
-    print(model.theta['be'])
-    print(model.theta['ki'])
-    print(model.theta['bi'])
-    print(model.theta['h'])
-
+    plt.plot(model_ll)
+    plt.title('model log likelihood over time')
 
     with open('theta_model.pickle', 'wb') as f:
         pickle.dump(model.theta, f)
